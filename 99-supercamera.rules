@@ -1,0 +1,2 @@
+SUBSYSTEMS=="usb", ENV{DEVTYPE}=="usb_device", ATTRS{idVendor}=="2ce3", ATTRS{idProduct}=="3828", MODE="0660", GROUP="video", TAG+="uaccess"
+SUBSYSTEMS=="usb", ENV{DEVTYPE}=="usb_device", ATTRS{idVendor}=="0329", ATTRS{idProduct}=="2022", MODE="0660", GROUP="video", TAG+="uaccess"

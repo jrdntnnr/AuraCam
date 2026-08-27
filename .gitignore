@@ -23,6 +23,12 @@ Thumbs.db
 test_*.jpg
 snap_*.jpg
 rec_*.mp4
+timelapse_*/
+*.mp4
+
+# Per-user runtime state
+.config/
+settings.json
 
 # Pictures output
 Pictures/
