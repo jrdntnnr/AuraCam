@@ -7,7 +7,7 @@ from dataclasses import asdict, dataclass, fields, replace
 from pathlib import Path
 from typing import Any
 
-from .control import HUD_MODES, HUD_PALETTES, MODES
+from .control import CAMERA_FOVS, CAMERA_LOOKS, HUD_MODES, HUD_PALETTES, MODES
 
 PALETTES = ("aura", "inferno", "turbo", "ocean", "magma")
 REPRESENTATIONS = ("temperature", "image")
@@ -61,6 +61,8 @@ class AuraConfig:
     host_fps_cap: int = 30
     jpeg_quality: int = 88
     hud_mode: str = "off"
+    camera_look: str = "natural"
+    camera_fov: str = "crop"
     hud_palette: str = "green"
     probe_x: int = 16
     probe_y: int = 12
@@ -117,6 +119,8 @@ _CHOICES = {
     "thermal_rotation": (0, 90, 180, 270),
     "hud_mode": HUD_MODES,
     "hud_palette": HUD_PALETTES,
+    "camera_look": CAMERA_LOOKS,
+    "camera_fov": CAMERA_FOVS,
 }
 
 

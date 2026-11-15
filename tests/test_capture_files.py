@@ -11,7 +11,8 @@ import numpy as np
 
 from auracam.compositor import AuraCompositor
 from auracam.config import AuraConfig
-from auracam.daemon import FrameLayer, _RECORD_END, AuraDaemon
+from auracam.frames import OverlayTransform
+from auracam.daemon import FrameLayer, overlay_config, _RECORD_END, AuraDaemon
 from auracam.frames import HudTelemetry
 
 
@@ -157,6 +158,15 @@ class CaptureFileTest(unittest.TestCase):
             self.assertLess(mean(clean), 10)
             self.assertGreater(mean(hud), 245)
             self.assertGreater(mean(snapshot), 245)
+
+    def test_overlay_config_follows_camera_crop(self):
+        config = AuraConfig(scale_x=1.0, scale_y=0.9, offset_x=10, offset_y=-20)
+        wide = OverlayTransform(scale_x=0.4, scale_y=0.5, shift_x=3, shift_y=-1)
+        adjusted = overlay_config(config, wide)
+        self.assertAlmostEqual(adjusted.scale_x, 0.4)
+        self.assertAlmostEqual(adjusted.scale_y, 0.45)
+        self.assertEqual((adjusted.offset_x, adjusted.offset_y), (7, -11))
+        self.assertIs(overlay_config(config, OverlayTransform()), config)
 
     def test_recording_is_published_after_writer_release(self):
         with tempfile.TemporaryDirectory() as directory:

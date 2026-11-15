@@ -29,7 +29,7 @@ import numpy as np
 
 from .cli import AuraClient
 from .config import ConfigStore
-from .control import HUD_MODES, HUD_PALETTES, MODES, HudMode
+from .control import CAMERA_FOVS, CAMERA_LOOKS, HUD_MODES, MODES, CameraFov, CameraLook, HudMode
 from .hud import CornerMarks, HudRenderer, Marker, palette_rgb
 
 PREVIEW_SIZE = (192, 144)
@@ -120,14 +120,15 @@ class CardputerBridge:
             return
         if self.menu:
             if key == "5":
-                palette = HUD_PALETTES[(HUD_PALETTES.index(config["hud_palette"]) + 1) % len(HUD_PALETTES)]
-                self.client.request("set", name="hud_palette", value=palette)
+                look = CAMERA_LOOKS[(CAMERA_LOOKS.index(config["camera_look"]) + 1) % len(CAMERA_LOOKS)]
+                self.client.request("set", name="camera_look", value=look)
             elif key == "6":
-                self.client.request("adjust", name="threshold", delta=-0.5)
+                fov = CAMERA_FOVS[(CAMERA_FOVS.index(config["camera_fov"]) + 1) % len(CAMERA_FOVS)]
+                self.client.request("set", name="camera_fov", value=fov)
             elif key == "7":
-                self.client.request("adjust", name="threshold", delta=0.5)
+                self.client.request("adjust", name="threshold", delta=-0.5)
             elif key == "8":
-                self.client.request("rotate", source="thermal")
+                self.client.request("adjust", name="threshold", delta=0.5)
             return
         if key == "5":
             result = self.client.request("snapshot")
@@ -209,10 +210,14 @@ class CardputerBridge:
         uv = status["uv"]
         thermal = status["thermal"]
         source = config["image_source"].upper()
+        # Natural crop is the default and shows nothing, e.g. "MONO WIDE".
+        parts = [config.get("camera_look", CameraLook.NATURAL.value), config.get("camera_fov")]
+        look = _clean(" ".join(p for p in parts if p not in (CameraLook.NATURAL.value, CameraFov.CROP.value, None)))
         return [
             f"{source} {uv['fps']:.0f}",
             f"IR  {thermal['fps']:.0f}",
             "",
+            look,
             _clean(config["mode"]),
             f"{config['threshold']:.1f}C",
         ]
@@ -237,7 +242,7 @@ class CardputerBridge:
 
     def _actions(self, status) -> str:
         if self.menu:
-            return "BACK|PALETTE|TEMP -|TEMP +|ROTATE"
+            return "BACK|LOOK|WIDE|TEMP -|TEMP +"
         record = "STOP" if status["recording"]["active"] else "RECORD"
         return f"MENU|SNAP|{record}|HUD|MODE"
 

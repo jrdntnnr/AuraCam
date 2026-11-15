@@ -10,6 +10,7 @@ import subprocess
 import threading
 import time
 from collections import deque
+from dataclasses import replace
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
@@ -19,7 +20,7 @@ import cv2
 import numpy as np
 
 from .compositor import AuraCompositor
-from .config import ConfigStore, canonical_name
+from .config import AuraConfig, ConfigStore, canonical_name
 from .control import (
     DEFAULT_SOCKET,
     MODES,
@@ -29,7 +30,7 @@ from .control import (
     RotationSource,
     SwitchAction,
 )
-from .frames import HudTelemetry
+from .frames import HudTelemetry, OverlayTransform
 from .rgb import RgbCamera
 from .thermal import MLX90640, DemoMLX90640, ThermalWorker
 from supercamera.validate import decode_jpeg
@@ -65,6 +66,19 @@ class FrameLayer(str, Enum):
 
     HUD = "hud"
     CLEAN = "clean"
+
+
+def overlay_config(config: AuraConfig, overlay: OverlayTransform) -> AuraConfig:
+    """Config with the thermal geometry mapped into the camera's active crop."""
+    if overlay == OverlayTransform():
+        return config
+    return replace(
+        config,
+        scale_x=config.scale_x * overlay.scale_x,
+        scale_y=config.scale_y * overlay.scale_y,
+        offset_x=round(config.offset_x * overlay.scale_x) + overlay.shift_x,
+        offset_y=round(config.offset_y * overlay.scale_y) + overlay.shift_y,
+    )
 
 
 # Output frame shape (rows, columns) reported before the first composite.
@@ -135,6 +149,7 @@ class AuraDaemon:
         self._jpeg_size: tuple[int, int] | None = None
         self._jpeg_layer = FrameLayer.HUD
         self._uv_relative = 0.0
+        self._overlay = OverlayTransform()
         self._latest_frame: np.ndarray | None = None
         self._latest_clean: np.ndarray | None = None
         self._frame_sequence = 0
@@ -213,8 +228,18 @@ class AuraDaemon:
             return _DEMO_CAMERA
         from protocol_camera import Camera
 
-        self._active_source = self.config_store.get().image_source
-        camera = RgbCamera() if self._active_source == "rgb" else Camera()
+        config = self.config_store.get()
+        self._active_source = config.image_source
+        camera = (
+            RgbCamera(config.camera_look, config.camera_fov)
+            if self._active_source == "rgb"
+            else Camera()
+        )
+        self._overlay = (
+            camera.overlay_transform(_DEFAULT_SHAPE)
+            if isinstance(camera, RgbCamera)
+            else OverlayTransform()
+        )
         with self._camera_lock:
             self._camera = camera
         self._last_button_count = camera.button_press_count
@@ -256,6 +281,16 @@ class AuraDaemon:
                 self._release_camera(camera)
                 camera = None
                 continue
+
+            # Field of view needs a new sensor mode; a look is a live control.
+            if isinstance(camera, RgbCamera):
+                if config.camera_fov != camera.fov:
+                    self._release_camera(camera)
+                    camera = None
+                    continue
+                if config.camera_look != camera.look:
+                    camera.set_look(config.camera_look)
+            config = overlay_config(config, self._overlay)
             started = time.monotonic()
             try:
                 if camera is _DEMO_CAMERA:
@@ -712,7 +747,9 @@ class AuraDaemon:
                 "error": self.thermal.error,
                 "markers": [
                     {"label": m.label, "x": m.x, "y": m.y, "value": m.value}
-                    for m in self.compositor.markers(thermal, self.config_store.get(), shape)
+                    for m in self.compositor.markers(
+                        thermal, overlay_config(self.config_store.get(), self._overlay), shape
+                    )
                 ],
             },
             "output": {

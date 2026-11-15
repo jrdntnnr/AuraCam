@@ -31,6 +31,16 @@ class ConfigStoreTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 store.update("hud_mode", "busy")
 
+    def test_camera_look_and_fov_choices(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = ConfigStore(Path(directory) / "config.json")
+            self.assertEqual((store.get().camera_look, store.get().camera_fov), ("natural", "crop"))
+            store.update("camera_look", "mono")
+            store.update("camera_fov", "wide")
+            self.assertEqual((store.get().camera_look, store.get().camera_fov), ("mono", "wide"))
+            with self.assertRaises(ValueError):
+                store.update("camera_look", "sepia")
+
     def test_thermal_range_remains_ordered(self):
         with tempfile.TemporaryDirectory() as directory:
             store = ConfigStore(Path(directory) / "config.json")

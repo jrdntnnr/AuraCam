@@ -2,6 +2,7 @@ import base64
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import cv2
@@ -36,11 +37,11 @@ class CardputerTest(unittest.TestCase):
 
     def test_bottom_keys_change_context(self):
         client = MagicMock()
-        client.request.return_value = {"config": {"hud_mode": "off", "hud_palette": "green"}}
+        client.request.return_value = {"config": {"hud_mode": "off", "camera_look": "natural"}}
         bridge = CardputerBridge(client)
         bridge.action("4")
-        bridge.action("5")
-        client.request.assert_called_with("set", name="hud_palette", value="amber")
+        bridge.action("7")
+        client.request.assert_called_with("adjust", name="threshold", delta=-0.5)
         bridge.action("4")
         bridge.action("6")
         client.request.assert_called_with("record", action="toggle")
@@ -52,7 +53,7 @@ class CardputerTest(unittest.TestCase):
         module.Picamera2.return_value = camera
         with patch.dict("sys.modules", {"picamera2": module, "libcamera": MagicMock()}):
             with self.assertRaises(RuntimeError):
-                RgbCamera()
+                RgbCamera("natural", "crop")
         camera.close.assert_called_once()
 
     def test_rgb_flips_upside_down_sensor(self):
@@ -62,8 +63,48 @@ class CardputerTest(unittest.TestCase):
         module.Picamera2.return_value = camera
         libcamera = MagicMock()
         with patch.dict("sys.modules", {"picamera2": module, "libcamera": libcamera}):
-            RgbCamera()
+            RgbCamera("natural", "crop")
         libcamera.Transform.assert_called_once_with(hflip=True, vflip=True)
+
+    def test_rgb_look_sets_isp_controls(self):
+        camera = rgb_camera_mock()
+        with patch.dict("sys.modules", {"picamera2": camera.module, "libcamera": MagicMock()}):
+            rgb = RgbCamera("mono", "crop")
+            rgb.set_look("hicon")
+        first = camera.instance.create_video_configuration.call_args.kwargs["controls"]
+        self.assertEqual(first["Saturation"], 0.0)
+        controls = camera.instance.set_controls.call_args.args[0]
+        self.assertGreater(controls["Contrast"], 1.0)
+        self.assertEqual(controls["Saturation"], 1.0)
+        self.assertEqual(rgb.look, "hicon")
+
+    def test_rgb_wide_uses_full_sensor_and_shrinks_overlay(self):
+        camera = rgb_camera_mock(crop=(0, 2, 3280, 2460))
+        with patch.dict("sys.modules", {"picamera2": camera.module, "libcamera": MagicMock()}):
+            rgb = RgbCamera("natural", "wide")
+        sensor = camera.instance.create_video_configuration.call_args.kwargs["sensor"]
+        self.assertEqual(sensor["output_size"], (1640, 1232))
+        transform = rgb.overlay_transform((480, 640))
+        self.assertAlmostEqual(transform.scale_x, 1280 / 3280)
+        self.assertAlmostEqual(transform.scale_y, 960 / 2460)
+        self.assertEqual((transform.shift_x, transform.shift_y), (0, 0))
+
+    def test_rgb_crop_overlay_is_identity(self):
+        camera = rgb_camera_mock(crop=(1000, 752, 1280, 960))
+        with patch.dict("sys.modules", {"picamera2": camera.module, "libcamera": MagicMock()}):
+            rgb = RgbCamera("natural", "crop")
+        transform = rgb.overlay_transform((480, 640))
+        self.assertEqual((transform.scale_x, transform.scale_y, transform.shift_x, transform.shift_y), (1.0, 1.0, 0, 0))
+
+    def test_menu_keys_cycle_look_and_fov(self):
+        client = MagicMock()
+        client.request.return_value = {"config": {"camera_look": "natural", "camera_fov": "crop"}}
+        bridge = CardputerBridge(client)
+        bridge.action("4")
+        bridge.action("5")
+        client.request.assert_called_with("set", name="camera_look", value="mono")
+        bridge.action("6")
+        client.request.assert_called_with("set", name="camera_fov", value="wide")
 
     def test_packet_survives_missing_engine(self):
         client = MagicMock()
@@ -112,6 +153,7 @@ class CardputerTest(unittest.TestCase):
         kind, color, header, left, right, actions, _ = packet[:TEXT_BYTES].rstrip(b"\0").decode().split("\t")
         self.assertEqual((kind, color, header), ("LIVE", "84FF48", ""))
         self.assertIn("RGB 30", left.split("\n"))
+        self.assertIn("MONO WIDE", left.split("\n"))
         self.assertEqual(right.split("\n"), ["P 24.0C", "H 30.0C", "L 20.0C"])
         self.assertEqual(actions, "MENU|SNAP|RECORD|HUD|MODE")
         self.assertEqual(len(packet), TEXT_BYTES + PREVIEW_SIZE[0] * PREVIEW_SIZE[1] * 4)
@@ -125,6 +167,15 @@ class CardputerTest(unittest.TestCase):
         self.assertIn(b"WARMUP", packet[:TEXT_BYTES])
 
 
+def rgb_camera_mock(crop=(1000, 752, 1280, 960)):
+    instance = MagicMock()
+    instance.camera_properties = {"Rotation": 0}
+    instance.capture_metadata.return_value = {"ScalerCrop": crop}
+    module = MagicMock()
+    module.Picamera2.return_value = instance
+    return SimpleNamespace(instance=instance, module=module)
+
+
 def tiny_jpeg():
     ok, encoded = cv2.imencode(".jpg", np.zeros((144, 192, 3), np.uint8))
     return base64.b64encode(encoded.tobytes()).decode()
@@ -134,7 +185,8 @@ def preview(fps, jpeg):
     return {
         "jpeg": jpeg,
         "status": {
-            "config": {"image_source": "rgb", "mode": "clean", "threshold": 26.0, "hud_palette": "green"},
+            "config": {"image_source": "rgb", "mode": "clean", "threshold": 26.0, "hud_palette": "green",
+                       "camera_look": "mono", "camera_fov": "wide"},
             "uv": {"connected": True, "fps": fps, "error": None, "relative": 0.4},
             "thermal": {
                 "connected": True, "fps": 15.7, "refresh_hz": 16.0, "min": 20.0, "max": 30.0,

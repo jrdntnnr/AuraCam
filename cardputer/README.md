@@ -8,10 +8,10 @@ recording on normal exit.
 | Key | Capture screen | Menu |
 |---|---|---|
 | 4 | Menu | Back |
-| 5 | Snapshot | HUD palette |
-| 6 | Record/stop | Threshold -0.5 C |
-| 7 | HUD mode: off, minimal, tactical | Threshold +0.5 C |
-| 8 | Aura mode | Rotate thermal |
+| 5 | Snapshot | Camera look: natural, mono, hicon, fast |
+| 6 | Record/stop | Wide field of view on/off |
+| 7 | HUD mode: off, minimal, tactical | Threshold -0.5 C |
+| 8 | Aura mode | Threshold +0.5 C |
 
 The Cardputer always uses the onboard IMX219 through Picamera2 (the bridge
 forces `image_source` to `rgb` at start); the USB UV driver remains for the
@@ -19,6 +19,13 @@ Pi Zero build. Both feed the existing compositor and H.264 recorder. Captures ar
 settings in `~/.config/auracam/cardputer.json`. The screen uses the HUD's
 5x7 pixel font and amber palette: a centered 192x144 preview with probe, high
 and low markers, rates and mode on the left, temperatures on the right.
+Camera looks are IMX219 ISP controls (no CPU cost): mono is zero
+saturation, hicon raises contrast and sharpening with highlight-priority
+exposure, fast prefers short shutters. Wide switches the sensor from the
+640x480 centre crop to the full 1640x1232 binned array and shrinks the
+thermal overlay by the crop ratio (about 0.39) so it stays registered; the
+overlay calibration (`scale_*`, `offset_*`) is always stored for the crop.
+
 Snapshots and recordings burn in the selected HUD mode at 640x480 (none when
 off); the screen shows the same mode's markers on a clean preview. Regenerate the font after editing the HUD
 glyphs with `scripts/gen_pixel_font.py`.

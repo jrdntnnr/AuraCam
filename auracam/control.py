@@ -36,6 +36,28 @@ class HudPalette(str, Enum):
 HUD_PALETTES = tuple(palette.value for palette in HudPalette)
 
 
+class CameraLook(str, Enum):
+    """RGB camera image style, applied by the camera's ISP."""
+
+    NATURAL = "natural"
+    MONO = "mono"
+    HICON = "hicon"
+    FAST = "fast"
+
+
+CAMERA_LOOKS = tuple(look.value for look in CameraLook)
+
+
+class CameraFov(str, Enum):
+    """RGB sensor field of view: 640x480 centre crop or full binned sensor."""
+
+    CROP = "crop"
+    WIDE = "wide"
+
+
+CAMERA_FOVS = tuple(fov.value for fov in CameraFov)
+
+
 class ControlCommand(str, Enum):
     STATUS = "status"
     CONFIG = "config"

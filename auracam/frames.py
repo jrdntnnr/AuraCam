@@ -44,3 +44,17 @@ class OverlayGeometry:
     width: int
     height: int
     rotation: float
+
+
+@dataclass(frozen=True)
+class OverlayTransform:
+    """How the thermal overlay maps onto the current camera field of view.
+
+    The overlay is calibrated against one camera crop; a wider crop shows
+    the same scene smaller, so scale and offsets shrink and the centre may
+    shift (shift_* in output pixels)."""
+
+    scale_x: float = 1.0
+    scale_y: float = 1.0
+    shift_x: int = 0
+    shift_y: int = 0
