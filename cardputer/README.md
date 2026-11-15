@@ -34,7 +34,11 @@ Install it after building:
 ```sh
 chmod +x cardputer/launch.sh
 sudo install -m 644 cardputer/aura-cardputer.desktop /usr/share/APPLaunch/applications/
+systemctl --user restart APPLaunch.service
 ```
+
+APPLaunch reads the applications directory only at startup, so the restart (or
+a reboot) is what makes the entry appear in the carousel.
 
 The thermal module sits on the top EXT port, which carries I2C1 (`/dev/i2c-1`,
 shared with the keyboard and the M5IOE1 expander) and a switched 5 V output.
