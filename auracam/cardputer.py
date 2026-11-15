@@ -21,6 +21,10 @@ ENGINE_START_TIMEOUT_S = 90.0
 ENGINE_POLL_S = 0.25
 ERROR_HOLD_S = 4.0
 EXIT_KEY = "q"
+# MLX90640 at 16 Hz needs the I2C bus at 400 kHz (scripts/set_i2c_baud.sh).
+THERMAL_REFRESH_HZ = 16.0
+# Composite at the rate the 320x170 panel can show; the camera still runs at 30.
+COMPOSITE_FPS = 15
 
 
 class CardputerBridge:
@@ -67,7 +71,7 @@ class CardputerBridge:
 
     def packet(self):
         try:
-            response = self.client.request("preview")
+            response = self.client.request("preview", width=PREVIEW_SIZE[0], height=PREVIEW_SIZE[1])
         except OSError as exc:
             return self.text_packet(["CAPTURE ENGINE OFFLINE", str(exc)[:60]])
         status = response["status"]
@@ -75,7 +79,8 @@ class CardputerBridge:
             data = np.frombuffer(base64.b64decode(response["jpeg"]), np.uint8)
             frame = cv2.imdecode(data, cv2.IMREAD_COLOR)
             if frame is not None:
-                frame = cv2.resize(frame, PREVIEW_SIZE, interpolation=cv2.INTER_AREA)
+                if (frame.shape[1], frame.shape[0]) != PREVIEW_SIZE:
+                    frame = cv2.resize(frame, PREVIEW_SIZE, interpolation=cv2.INTER_AREA)
                 self.pixels = cv2.cvtColor(frame, cv2.COLOR_BGR2BGRA).tobytes()
         config = status["config"]
         thermal = status["thermal"]
@@ -129,7 +134,8 @@ def main():
     config_path = Path.home() / ".config/auracam/cardputer.json"
     store = ConfigStore(config_path)
     if not config_path.exists():
-        store.update("refresh_hz", 8.0)
+        store.update("refresh_hz", THERMAL_REFRESH_HZ)
+        store.update("host_fps_cap", COMPOSITE_FPS)
         store.update("scale_x", 1.0)
         store.update("scale_y", 1.0)
     store.update("image_source", "rgb")

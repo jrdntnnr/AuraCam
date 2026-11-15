@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import cv2
 import numpy as np
 
 from auracam.compositor import AuraCompositor
@@ -71,6 +72,7 @@ def capture_daemon(output_dir):
     daemon.output_dir = Path(output_dir)
     daemon._frame_lock = threading.Lock()
     daemon._jpeg_lock = threading.Lock()
+    daemon._jpeg_size = None
     daemon._record_lock = threading.Lock()
     daemon._record_error = None
     daemon._record_frames = 0
@@ -118,6 +120,20 @@ class CaptureFileTest(unittest.TestCase):
             self.assertIs(first, second)
             self.assertEqual(first_sequence, second_sequence)
             self.assertGreater(len(first), 1000)
+
+    def test_preview_jpeg_is_encoded_at_requested_size(self):
+        with tempfile.TemporaryDirectory() as directory:
+            daemon = capture_daemon(directory)
+            daemon._latest_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+            daemon.config_store = mock.Mock()
+            daemon.config_store.get.return_value = AuraConfig(jpeg_quality=88)
+
+            small, _ = daemon._frame_jpeg((192, 144))
+            full, _ = daemon._frame_jpeg()
+
+            decoded = cv2.imdecode(np.frombuffer(small, np.uint8), cv2.IMREAD_COLOR)
+            self.assertEqual(decoded.shape[:2], (144, 192))
+            self.assertGreater(len(full), len(small))
 
     def test_recording_is_published_after_writer_release(self):
         with tempfile.TemporaryDirectory() as directory:

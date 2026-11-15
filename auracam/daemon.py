@@ -59,6 +59,15 @@ _PREVIEW_COMMANDS = frozenset(
 )
 
 
+def _preview_size(request: dict[str, Any]) -> tuple[int, int] | None:
+    """Optional `width`/`height` of a preview request; None keeps full size."""
+    width = request.get("width")
+    height = request.get("height")
+    if width is None or height is None:
+        return None
+    return int(width), int(height)
+
+
 class RateCounter:
     def __init__(self, length: int = 120):
         self._times: deque[float] = deque(maxlen=length)
@@ -104,6 +113,7 @@ class AuraDaemon:
         self._jpeg_lock = threading.Lock()
         self._latest_jpeg: bytes | None = None
         self._jpeg_sequence = -1
+        self._jpeg_size: tuple[int, int] | None = None
         self._latest_frame: np.ndarray | None = None
         self._frame_sequence = 0
         self._started = time.monotonic()
@@ -370,13 +380,20 @@ class AuraDaemon:
         os.replace(pending, final)
         self._sync_path(final.parent)
 
-    def _frame_jpeg(self) -> tuple[bytes | None, int]:
+    def _frame_jpeg(
+        self, size: tuple[int, int] | None = None
+    ) -> tuple[bytes | None, int]:
+        """Encode the latest composite, downscaled to `size` when given.
+
+        Previews on a small panel ask for their own size so the encoder
+        works on 192x144 instead of 640x480; snapshots pass None."""
         with self._jpeg_lock:
             with self._frame_lock:
                 sequence = self._frame_sequence
                 if (
                     self._latest_jpeg is not None
                     and self._jpeg_sequence == sequence
+                    and self._jpeg_size == size
                 ):
                     return self._latest_jpeg, sequence
                 frame = (
@@ -386,6 +403,8 @@ class AuraDaemon:
                 )
             if frame is None:
                 return None, sequence
+            if size is not None and (frame.shape[1], frame.shape[0]) != size:
+                frame = cv2.resize(frame, size, interpolation=cv2.INTER_AREA)
             quality = self.config_store.get().jpeg_quality
             ok, encoded = cv2.imencode(
                 ".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, quality]
@@ -397,6 +416,7 @@ class AuraDaemon:
                 if self._frame_sequence == sequence:
                     self._latest_jpeg = jpeg
                     self._jpeg_sequence = sequence
+                    self._jpeg_size = size
             return jpeg, sequence
 
     def snapshot(self, suffix: str = "cli") -> str:
@@ -784,9 +804,11 @@ class AuraDaemon:
 
         raise ValueError(f"Unknown capture command: {command.value}")
 
-    def _preview_command(self, command: ControlCommand) -> dict[str, Any]:
+    def _preview_command(
+        self, command: ControlCommand, request: dict[str, Any]
+    ) -> dict[str, Any]:
         if command is ControlCommand.PREVIEW:
-            jpeg, sequence = self._frame_jpeg()
+            jpeg, sequence = self._frame_jpeg(_preview_size(request))
             return {
                 "ok": True,
                 "sequence": sequence,
@@ -818,7 +840,7 @@ class AuraDaemon:
         if command in _CAPTURE_COMMANDS:
             return self._capture_command(command, request)
         if command in _PREVIEW_COMMANDS:
-            return self._preview_command(command)
+            return self._preview_command(command, request)
 
         raise ValueError(f"Unknown command: {command.value}")
 

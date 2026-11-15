@@ -46,8 +46,19 @@ shared with the keyboard and the M5IOE1 expander) and a switched 5 V output.
 it the sensor is unpowered and `aura doctor` reports no device at `0x33`. The
 Grove port shares the same bus. Do not apply the Pi Zero installation script to
 this device: it changes global I2C settings shared with the keyboard and onboard
-peripherals. This port starts thermal refresh at 8 Hz and preserves the vendor's
-bus clock.
+peripherals.
+
+The bus runs at the Pi default 100 kHz, which limits the MLX90640 to about
+4 frames per second. For 16 Hz raise it to 400 kHz (every peer on bus 1
+supports Fast-mode) and reboot:
+
+```sh
+sudo scripts/set_i2c_baud.sh 400000 && sudo reboot
+```
+
+A first run writes `refresh_hz` 16 and `host_fps_cap` 15 into
+`~/.config/auracam/cardputer.json`; the preview is encoded at the panel's
+192x144 so the daemon does not JPEG a 640x480 frame per preview.
 
 Run the hardware smoke test from the repository root:
 
