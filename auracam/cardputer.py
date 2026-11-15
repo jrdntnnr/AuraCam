@@ -17,6 +17,10 @@ from .control import HUD_MODES, MODES
 
 PREVIEW_SIZE = (192, 144)
 TEXT_BYTES = 512
+ENGINE_START_TIMEOUT_S = 90.0
+ENGINE_POLL_S = 0.25
+ERROR_HOLD_S = 4.0
+EXIT_KEY = "q"
 
 
 class CardputerBridge:
@@ -59,8 +63,15 @@ class CardputerBridge:
             mode = MODES[(MODES.index(config["mode"]) + 1) % len(MODES)]
             self.client.request("mode", mode=mode)
 
+    def text_packet(self, lines, actions=""):
+        text = ("\n".join(lines) + "\t" + actions).encode("ascii", "replace")[:TEXT_BYTES - 1]
+        return text.ljust(TEXT_BYTES, b"\0") + self.pixels
+
     def packet(self):
-        response = self.client.request("preview")
+        try:
+            response = self.client.request("preview")
+        except OSError as exc:
+            return self.text_packet(["CAPTURE ENGINE OFFLINE", str(exc)[:60]])
         status = response["status"]
         if response["jpeg"]:
             data = np.frombuffer(base64.b64decode(response["jpeg"]), np.uint8)
@@ -71,7 +82,12 @@ class CardputerBridge:
         config = status["config"]
         thermal = status["thermal"]
         recording = status["recording"]
-        temperature = f"{thermal['min']:.1f}..{thermal['max']:.1f} C" if thermal["connected"] else "THERMAL OFFLINE"
+        if not thermal["connected"]:
+            temperature = "THERMAL OFFLINE"
+        elif thermal["min"] is None:
+            temperature = "THERMAL WARMUP"
+        else:
+            temperature = f"{thermal['min']:.1f}..{thermal['max']:.1f} C"
         message = self.message if time.monotonic() < self.message_until else status["uv"]["error"] or thermal["error"] or ""
         lines = [
             f"{config['image_source'].upper()} {status['uv']['fps']:.1f} FPS",
@@ -82,11 +98,31 @@ class CardputerBridge:
             f"REC {recording['seconds']:.0f}s" if recording["active"] else "READY",
             str(message)[:100],
         ]
-        actions = "Back|HUD|Temp -|Temp +|Rotate" if self.menu else "Menu|Snap|Stop|Source|Mode"
+        actions = "BACK|HUD|TEMP -|TEMP +|ROTATE" if self.menu else "MENU|SNAP|STOP|SOURCE|MODE"
         if not self.menu and not recording["active"]:
-            actions = "Menu|Snap|Record|Source|Mode"
-        text = ("\n".join(lines) + "\t" + actions).encode("ascii", "replace")[:TEXT_BYTES - 1]
-        return text.ljust(TEXT_BYTES, b"\0") + self.pixels
+            actions = "MENU|SNAP|RECORD|SOURCE|MODE"
+        return self.text_packet(lines, actions)
+
+
+def emit(packet):
+    sys.stdout.buffer.write(packet)
+    sys.stdout.buffer.flush()
+
+
+def wait_for_engine(process, client, bridge):
+    started = time.monotonic()
+    while time.monotonic() - started < ENGINE_START_TIMEOUT_S:
+        if process.poll() is not None:
+            raise RuntimeError("Capture engine exited during startup")
+        try:
+            client.request("status")
+            return
+        except OSError:
+            pass
+        elapsed = int(time.monotonic() - started)
+        emit(bridge.text_packet(["INITIALIZING CAPTURE ENGINE", f"{elapsed:02d}s"]))
+        time.sleep(ENGINE_POLL_S)
+    raise RuntimeError("Capture engine did not start")
 
 
 def main():
@@ -104,28 +140,23 @@ def main():
     client = AuraClient(str(socket_path))
     bridge = CardputerBridge(client)
     try:
-        for _ in range(100):
-            if process.poll() is not None:
-                raise RuntimeError("Capture engine exited during startup")
-            try:
-                client.request("status")
-                break
-            except OSError:
-                time.sleep(0.1)
+        wait_for_engine(process, client, bridge)
         while process.poll() is None:
             ready, _, _ = select.select([sys.stdin], [], [], 0.1)
             if ready:
                 keys = os.read(sys.stdin.fileno(), 32).decode("ascii")
-                if not keys or "q" in keys:
+                if not keys or EXIT_KEY in keys:
                     break
                 for key in keys:
                     try:
                         bridge.action(key)
                     except Exception as exc:
                         bridge.message = str(exc)
-                        bridge.message_until = time.monotonic() + 4
-            sys.stdout.buffer.write(bridge.packet())
-            sys.stdout.buffer.flush()
+                        bridge.message_until = time.monotonic() + ERROR_HOLD_S
+            emit(bridge.packet())
+    except RuntimeError as exc:
+        emit(bridge.text_packet(["STARTUP FAILED", str(exc)[:60]]))
+        time.sleep(ERROR_HOLD_S)
     except BrokenPipeError:
         pass
     finally:
