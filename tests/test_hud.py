@@ -80,6 +80,17 @@ class HudRendererTest(unittest.TestCase):
             result[140:420, 120:520], self.base[140:420, 120:520]
         )
 
+    def test_mirrored_thermal_points(self):
+        renderer = HudRenderer()
+        points = renderer._thermal_points(
+            self.thermal,
+            AuraConfig(thermal_mirror_h=True, probe_x=16, probe_y=12),
+        )
+        self.assertIsNotNone(points)
+        self.assertEqual(points.probe, (15, 12))
+        self.assertEqual(points.high, (26, 3))
+        self.assertEqual(points.low, (4, 20))
+
     def test_rotated_thermal_points(self):
         renderer = HudRenderer()
         points = renderer._thermal_points(

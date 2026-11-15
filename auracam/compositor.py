@@ -92,9 +92,9 @@ class AuraCompositor:
             else thermal.image
         )
         raw = np.nan_to_num(raw.astype(np.float32), nan=0.0, posinf=0.0, neginf=0.0)
-        raw = self._rotate_source(raw, config.thermal_rotation)
+        raw = self._orient_source(raw, config)
         with self._lock:
-            signature = (config.representation, config.thermal_rotation)
+            signature = (config.representation, config.thermal_rotation, config.thermal_mirror_h)
             if signature != self._temporal_signature:
                 self._smoothed = None
                 self._trail = None
@@ -137,7 +137,7 @@ class AuraCompositor:
             if config.representation == "temperature"
             else thermal.image
         )
-        raw = self._rotate_source(raw, config.thermal_rotation)
+        raw = self._orient_source(raw, config)
         norm = self._normalize(raw, config)
         rows, columns = norm.shape
         norm = cv2.resize(norm, size, interpolation=self._interpolation(config))
@@ -147,6 +147,13 @@ class AuraCompositor:
         if config.grid:
             self._draw_grid(color, rows, columns)
         return color
+
+    @staticmethod
+    def _orient_source(source: np.ndarray, config: AuraConfig) -> np.ndarray:
+        rotated = AuraCompositor._rotate_source(source, config.thermal_rotation)
+        if config.thermal_mirror_h:
+            return cv2.flip(rotated, 1)
+        return rotated
 
     @staticmethod
     def _rotate_source(source: np.ndarray, rotation: int) -> np.ndarray:

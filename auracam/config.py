@@ -50,6 +50,7 @@ class AuraConfig:
     reflected_offset: float = 8.0
     camera_rotation: int = 0
     thermal_rotation: int = 0
+    thermal_mirror_h: bool = False
     mirror_h: bool = False
     mirror_v: bool = False
     brightness: float = 1.0

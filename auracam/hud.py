@@ -196,6 +196,8 @@ class HudRenderer:
         if not np.isfinite(field).any():
             return None
         rotated = HudRenderer._rotate(field, config.thermal_rotation)
+        if config.thermal_mirror_h:
+            rotated = cv2.flip(rotated, 1)
         high_y, high_x = np.unravel_index(np.nanargmax(rotated), rotated.shape)
         low_y, low_x = np.unravel_index(np.nanargmin(rotated), rotated.shape)
         probe_x = min(field.shape[1] - 1, max(0, config.probe_x))
@@ -203,6 +205,8 @@ class HudRenderer:
         mapped_probe = HudRenderer._rotate_point(
             probe_x, probe_y, field.shape, config.thermal_rotation
         )
+        if config.thermal_mirror_h:
+            mapped_probe = (rotated.shape[1] - 1 - mapped_probe[0], mapped_probe[1])
         return ThermalPoints(
             probe=mapped_probe,
             high=(int(high_x), int(high_y)),
