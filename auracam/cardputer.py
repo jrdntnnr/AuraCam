@@ -196,6 +196,8 @@ class CardputerBridge:
         if time.monotonic() < self.message_until:
             return _clean(self.message)[:HEADER_CHARS]
         recording = status["recording"]
+        if recording.get("saving"):
+            return "SAVING"
         if recording["active"]:
             seconds = round(recording["seconds"])
             return f"REC {seconds // 60:02d}:{seconds % 60:02d}"

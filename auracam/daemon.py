@@ -150,6 +150,7 @@ class AuraDaemon:
         self._jpeg_layer = FrameLayer.HUD
         self._uv_relative = 0.0
         self._overlay = OverlayTransform()
+        self._save_thread: threading.Thread | None = None
         self._latest_frame: np.ndarray | None = None
         self._latest_clean: np.ndarray | None = None
         self._frame_sequence = 0
@@ -195,6 +196,8 @@ class AuraDaemon:
                 pass
         if self._capture_thread:
             self._capture_thread.join(timeout=3)
+        if self._save_thread is not None:
+            self._save_thread.join(timeout=60)
         self._stop_recording()
         try:
             self.socket_path.unlink()
@@ -687,6 +690,27 @@ class AuraDaemon:
         self._record_error = None
         return str(final_path)
 
+    def _saving(self) -> bool:
+        thread = self._save_thread
+        return thread is not None and thread.is_alive()
+
+    def _save_in_background(self) -> str | None:
+        """Finalize the recording off the request loop.
+
+        Draining the encoder and the timing pass take several seconds on a
+        Pi Zero class board; done inline they block previews and outlast
+        client timeouts."""
+        path = self._record_path
+        self._save_thread = threading.Thread(target=self._save_recording, name="video-save", daemon=True)
+        self._save_thread.start()
+        return path
+
+    def _save_recording(self) -> None:
+        try:
+            self._stop_recording()
+        except RuntimeError as exc:
+            self._record_error = str(exc)
+
     def recording_status(self) -> dict[str, Any]:
         with self._record_lock:
             writer = self._record_writer
@@ -708,6 +732,7 @@ class AuraDaemon:
                 "dropped": self._record_dropped,
                 "seconds": time.monotonic() - self._record_started if active else 0.0,
                 "error": self._record_error,
+                "saving": self._saving(),
             }
 
     def status(self) -> dict[str, Any]:
@@ -844,12 +869,16 @@ class AuraDaemon:
             except ValueError:
                 allowed = ", ".join(value.value for value in RecordAction)
                 raise ValueError(f"record action must be one of: {allowed}") from None
+            if self._saving():
+                raise RuntimeError("Saving previous recording")
             present = self._record_writer is not None
             if action is RecordAction.START or (
                 action is RecordAction.TOGGLE and not present
             ):
                 return {"ok": True, "active": True, "path": self._start_recording()}
-            return {"ok": True, "active": False, "path": self._stop_recording()}
+            if not present:
+                return {"ok": True, "active": False, "saving": False, "path": None}
+            return {"ok": True, "active": False, "saving": True, "path": self._save_in_background()}
         if command is ControlCommand.PAUSE:
             action_value = request.get("action", SwitchAction.TOGGLE.value)
             if isinstance(action_value, bool):
@@ -915,6 +944,29 @@ class AuraDaemon:
 
         raise ValueError(f"Unknown command: {command.value}")
 
+    def _serve_connection(self, connection: socket.socket) -> None:
+        """Answer one request on an accepted control connection."""
+        connection.settimeout(3.0)
+        try:
+            payload = b""
+            while b"\n" not in payload and len(payload) < 2_000_000:
+                chunk = connection.recv(65536)
+                if not chunk:
+                    break
+                payload += chunk
+            request = json.loads(payload.split(b"\n", 1)[0].decode("utf-8"))
+            response = self._handle(request)
+        except Exception as exc:
+            response = {"ok": False, "error": str(exc)}
+
+        # A client that timed out and hung up must not take the engine down.
+        try:
+            connection.sendall(
+                json.dumps(response, separators=(",", ":")).encode() + b"\n"
+            )
+        except OSError:
+            pass
+
     def serve_forever(self) -> None:
         self.start()
         self.socket_path.parent.mkdir(parents=True, exist_ok=True)
@@ -934,21 +986,7 @@ class AuraDaemon:
                 except socket.timeout:
                     continue
                 with connection:
-                    connection.settimeout(3.0)
-                    try:
-                        payload = b""
-                        while b"\n" not in payload and len(payload) < 2_000_000:
-                            chunk = connection.recv(65536)
-                            if not chunk:
-                                break
-                            payload += chunk
-                        request = json.loads(payload.split(b"\n", 1)[0].decode("utf-8"))
-                        response = self._handle(request)
-                    except Exception as exc:
-                        response = {"ok": False, "error": str(exc)}
-                    connection.sendall(
-                        json.dumps(response, separators=(",", ":")).encode() + b"\n"
-                    )
+                    self._serve_connection(connection)
         finally:
             server.close()
             self.close()

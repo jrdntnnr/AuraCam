@@ -158,6 +158,14 @@ class CardputerTest(unittest.TestCase):
         self.assertEqual(actions, "MENU|SNAP|RECORD|HUD|MODE")
         self.assertEqual(len(packet), TEXT_BYTES + PREVIEW_SIZE[0] * PREVIEW_SIZE[1] * 4)
 
+    def test_header_shows_saving(self):
+        client = MagicMock()
+        response = preview(fps=30.0, jpeg=tiny_jpeg())
+        response["status"]["recording"]["saving"] = True
+        client.request.return_value = response
+        packet = CardputerBridge(client).packet()
+        self.assertEqual(packet[:TEXT_BYTES].split(b"\t")[2], b"SAVING")
+
     def test_packet_before_first_thermal_frame(self):
         client = MagicMock()
         response = preview(fps=0.0, jpeg="")

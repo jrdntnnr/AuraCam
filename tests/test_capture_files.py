@@ -1,4 +1,5 @@
 import queue
+import socket
 import tempfile
 import threading
 import time
@@ -74,6 +75,10 @@ def capture_daemon(output_dir):
     daemon._frame_lock = threading.Lock()
     daemon._jpeg_lock = threading.Lock()
     daemon._jpeg_size = None
+    daemon._save_thread = None
+    daemon._record_started = 0.0
+    daemon._record_path = None
+    daemon._record_writer = None
     daemon._jpeg_layer = FrameLayer.HUD
     daemon._latest_clean = None
     daemon._record_lock = threading.Lock()
@@ -167,6 +172,35 @@ class CaptureFileTest(unittest.TestCase):
         self.assertAlmostEqual(adjusted.scale_y, 0.45)
         self.assertEqual((adjusted.offset_x, adjusted.offset_y), (7, -11))
         self.assertIs(overlay_config(config, OverlayTransform()), config)
+
+    def test_client_hangup_does_not_kill_server(self):
+        with tempfile.TemporaryDirectory() as directory:
+            daemon = capture_daemon(directory)
+            daemon._handle = mock.Mock(return_value={"ok": True, "pad": "x" * 500_000})
+            server_side, client_side = socket.socketpair()
+            client_side.sendall(b'{"command":"status"}\n')
+            client_side.close()
+            with server_side:
+                daemon._serve_connection(server_side)
+            daemon._handle.assert_called_once()
+
+    def test_record_stop_returns_while_saving(self):
+        with tempfile.TemporaryDirectory() as directory:
+            daemon = capture_daemon(directory)
+            daemon._record_writer = mock.Mock()
+            daemon._record_path = "/tmp/aura_test.mp4"
+            release = threading.Event()
+            daemon._stop_recording = mock.Mock(side_effect=lambda: release.wait(5) and "/tmp/aura_test.mp4")
+
+            response = daemon._handle({"command": "record", "action": "stop"})
+
+            self.assertTrue(response["saving"])
+            self.assertTrue(daemon.recording_status()["saving"])
+            with self.assertRaisesRegex(RuntimeError, "Saving"):
+                daemon._handle({"command": "record", "action": "toggle"})
+            release.set()
+            daemon._save_thread.join(5)
+            self.assertFalse(daemon.recording_status()["saving"])
 
     def test_recording_is_published_after_writer_release(self):
         with tempfile.TemporaryDirectory() as directory:
