@@ -8,14 +8,14 @@ recording on normal exit.
 | Key | Capture screen | Menu |
 |---|---|---|
 | 4 | Menu | Back |
-| 5 | Snapshot | Cycle recorded HUD |
+| 5 | Snapshot | HUD palette |
 | 6 | Record/stop | Threshold -0.5 C |
-| 7 | RGB/UV source | Threshold +0.5 C |
+| 7 | HUD mode | Threshold +0.5 C |
 | 8 | Aura mode | Rotate thermal |
 
-Source switching requires stopping recording. RGB uses the onboard IMX219 via
-Picamera2; UV retains the proprietary USB driver. Both feed the existing
-compositor and H.264 recorder. Captures are in `~/Pictures/auracam` and device
+The Cardputer always uses the onboard IMX219 through Picamera2 (the bridge
+forces `image_source` to `rgb` at start); the USB UV driver remains for the
+Pi Zero build. Both feed the existing compositor and H.264 recorder. Captures are in `~/Pictures/auracam` and device
 settings in `~/.config/auracam/cardputer.json`. The preview is 192x144 with a
 telemetry column and bottom action bar; captures retain 640x480 resolution.
 

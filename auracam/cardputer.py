@@ -13,7 +13,7 @@ import numpy as np
 
 from .cli import AuraClient
 from .config import ConfigStore
-from .control import HUD_MODES, MODES
+from .control import HUD_MODES, HUD_PALETTES, MODES
 
 PREVIEW_SIZE = (192, 144)
 TEXT_BYTES = 512
@@ -39,8 +39,8 @@ class CardputerBridge:
             return
         if self.menu:
             if key == "5":
-                mode = HUD_MODES[(HUD_MODES.index(config["hud_mode"]) + 1) % len(HUD_MODES)]
-                self.client.request("set", name="hud_mode", value=mode)
+                palette = HUD_PALETTES[(HUD_PALETTES.index(config["hud_palette"]) + 1) % len(HUD_PALETTES)]
+                self.client.request("set", name="hud_palette", value=palette)
             elif key == "6":
                 self.client.request("adjust", name="threshold", delta=-0.5)
             elif key == "7":
@@ -55,10 +55,8 @@ class CardputerBridge:
         elif key == "6":
             self.client.request("record", action="toggle")
         elif key == "7":
-            if status["recording"]["active"]:
-                raise RuntimeError("Stop recording before switching source")
-            source = "uv" if config["image_source"] == "rgb" else "rgb"
-            self.client.request("set", name="image_source", value=source)
+            mode = HUD_MODES[(HUD_MODES.index(config["hud_mode"]) + 1) % len(HUD_MODES)]
+            self.client.request("set", name="hud_mode", value=mode)
         elif key == "8":
             mode = MODES[(MODES.index(config["mode"]) + 1) % len(MODES)]
             self.client.request("mode", mode=mode)
@@ -98,9 +96,9 @@ class CardputerBridge:
             f"REC {recording['seconds']:.0f}s" if recording["active"] else "READY",
             str(message)[:100],
         ]
-        actions = "BACK|HUD|TEMP -|TEMP +|ROTATE" if self.menu else "MENU|SNAP|STOP|SOURCE|MODE"
+        actions = "BACK|PALETTE|TEMP -|TEMP +|ROTATE" if self.menu else "MENU|SNAP|STOP|HUD|MODE"
         if not self.menu and not recording["active"]:
-            actions = "MENU|SNAP|RECORD|SOURCE|MODE"
+            actions = "MENU|SNAP|RECORD|HUD|MODE"
         return self.text_packet(lines, actions)
 
 
@@ -129,10 +127,10 @@ def main():
     runtime = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"))
     socket_path = runtime / "auracam-cardputer.sock"
     config_path = Path.home() / ".config/auracam/cardputer.json"
+    store = ConfigStore(config_path)
     if not config_path.exists():
-        store = ConfigStore(config_path)
-        store.update("image_source", "rgb")
         store.update("refresh_hz", 8.0)
+    store.update("image_source", "rgb")
     process = subprocess.Popen(
         [sys.executable, "-m", "auracam.daemon", "--socket", str(socket_path), "--config", str(config_path)],
         stdout=sys.stderr,

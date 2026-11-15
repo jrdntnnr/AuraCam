@@ -18,23 +18,19 @@ class CardputerTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 store.update("image_source", "invalid")
 
-    def test_recording_blocks_switch(self):
+    def test_hud_key_cycles_on_capture_screen(self):
         client = MagicMock()
-        client.request.return_value = {
-            "config": {"image_source": "rgb"},
-            "recording": {"active": True},
-        }
-        with self.assertRaisesRegex(RuntimeError, "Stop recording"):
-            CardputerBridge(client).action("7")
-        client.request.assert_called_once_with("status")
+        client.request.return_value = {"config": {"hud_mode": "off"}, "recording": {"active": True}}
+        CardputerBridge(client).action("7")
+        client.request.assert_called_with("set", name="hud_mode", value="minimal")
 
     def test_bottom_keys_change_context(self):
         client = MagicMock()
-        client.request.return_value = {"config": {"hud_mode": "off"}}
+        client.request.return_value = {"config": {"hud_mode": "off", "hud_palette": "green"}}
         bridge = CardputerBridge(client)
         bridge.action("4")
         bridge.action("5")
-        client.request.assert_called_with("set", name="hud_mode", value="minimal")
+        client.request.assert_called_with("set", name="hud_palette", value="amber")
         bridge.action("4")
         bridge.action("6")
         client.request.assert_called_with("record", action="toggle")
