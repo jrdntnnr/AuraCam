@@ -11,6 +11,7 @@ import threading
 import time
 from collections import deque
 from datetime import datetime
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
@@ -57,6 +58,13 @@ _CAPTURE_COMMANDS = frozenset(
 _PREVIEW_COMMANDS = frozenset(
     {ControlCommand.PREVIEW, ControlCommand.THERMAL_PREVIEW}
 )
+
+
+class FrameLayer(str, Enum):
+    """Which composite a preview gets: with the configured HUD, or without."""
+
+    HUD = "hud"
+    CLEAN = "clean"
 
 
 # Output frame shape (rows, columns) reported before the first composite.
@@ -125,8 +133,10 @@ class AuraDaemon:
         self._latest_jpeg: bytes | None = None
         self._jpeg_sequence = -1
         self._jpeg_size: tuple[int, int] | None = None
+        self._jpeg_layer = FrameLayer.HUD
         self._uv_relative = 0.0
         self._latest_frame: np.ndarray | None = None
+        self._latest_clean: np.ndarray | None = None
         self._frame_sequence = 0
         self._started = time.monotonic()
         self._uv_rate = RateCounter()
@@ -265,10 +275,17 @@ class AuraDaemon:
                 self._uv_rate.tick()
                 thermal = self.thermal.latest()
                 self._uv_relative = _relative_brightness(frame)
-                telemetry = self._hud_data(frame) if config.hud_mode != "off" else None
-                composed = self.compositor.compose(frame, thermal, config, telemetry)
+
+                # Clean composite for panels that draw their own overlay; the
+                # HUD copy is what snapshots and recordings save.
+                clean = self.compositor.compose(frame, thermal, config)
+                composed = clean
+                if config.hud_mode != "off":
+                    telemetry = self._hud_data(frame)
+                    composed = self.compositor.render_hud(clean.copy(), thermal, config, telemetry)
                 with self._frame_lock:
                     self._latest_frame = composed
+                    self._latest_clean = clean
                     self._frame_sequence += 1
                     self._latest_jpeg = None
                     self._jpeg_sequence = -1
@@ -386,12 +403,15 @@ class AuraDaemon:
         self._sync_path(final.parent)
 
     def _frame_jpeg(
-        self, size: tuple[int, int] | None = None
+        self,
+        size: tuple[int, int] | None = None,
+        layer: FrameLayer = FrameLayer.HUD,
     ) -> tuple[bytes | None, int]:
         """Encode the latest composite, downscaled to `size` when given.
 
         Previews on a small panel ask for their own size so the encoder
-        works on 192x144 instead of 640x480; snapshots pass None."""
+        works on 192x144 instead of 640x480, and may ask for the clean
+        layer when they draw telemetry themselves; snapshots pass neither."""
         with self._jpeg_lock:
             with self._frame_lock:
                 sequence = self._frame_sequence
@@ -399,13 +419,11 @@ class AuraDaemon:
                     self._latest_jpeg is not None
                     and self._jpeg_sequence == sequence
                     and self._jpeg_size == size
+                    and self._jpeg_layer == layer
                 ):
                     return self._latest_jpeg, sequence
-                frame = (
-                    None
-                    if self._latest_frame is None
-                    else self._latest_frame.copy()
-                )
+                source = self._latest_clean if layer is FrameLayer.CLEAN else self._latest_frame
+                frame = None if source is None else source.copy()
             if frame is None:
                 return None, sequence
             if size is not None and (frame.shape[1], frame.shape[0]) != size:
@@ -422,6 +440,7 @@ class AuraDaemon:
                     self._latest_jpeg = jpeg
                     self._jpeg_sequence = sequence
                     self._jpeg_size = size
+                    self._jpeg_layer = layer
             return jpeg, sequence
 
     def snapshot(self, suffix: str = "cli") -> str:
@@ -822,7 +841,8 @@ class AuraDaemon:
         self, command: ControlCommand, request: dict[str, Any]
     ) -> dict[str, Any]:
         if command is ControlCommand.PREVIEW:
-            jpeg, sequence = self._frame_jpeg(_preview_size(request))
+            layer = FrameLayer(request.get("layer", FrameLayer.HUD.value))
+            jpeg, sequence = self._frame_jpeg(_preview_size(request), layer)
             return {
                 "ok": True,
                 "sequence": sequence,

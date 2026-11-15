@@ -22,15 +22,17 @@ class CardputerTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 store.update("image_source", "invalid")
 
-    def test_hud_key_cycles_screen_overlay(self):
+    def test_hud_key_sets_capture_hud(self):
         client = MagicMock()
         client.request.return_value = {"config": {"hud_mode": "off"}, "recording": {"active": True}}
-        bridge = CardputerBridge(client)
-        bridge.action("7")
-        self.assertEqual(bridge.hud, "off")
-        bridge.action("7")
-        self.assertEqual(bridge.hud, "minimal")
-        client.request.assert_called_with("status")
+        CardputerBridge(client).action("7")
+        client.request.assert_called_with("set", name="hud_mode", value="minimal")
+
+    def test_preview_asks_for_clean_layer(self):
+        client = MagicMock()
+        client.request.return_value = preview(fps=30.0, jpeg=tiny_jpeg())
+        CardputerBridge(client).packet()
+        client.request.assert_called_with("preview", width=192, height=144, layer="clean")
 
     def test_bottom_keys_change_context(self):
         client = MagicMock()

@@ -126,6 +126,17 @@ class AuraCompositor:
             return result
         return self._hud.render(result, thermal, config, telemetry, geometry)
 
+    def render_hud(
+        self,
+        frame: np.ndarray,
+        thermal: ThermalFrame | None,
+        config: AuraConfig,
+        telemetry: HudTelemetry,
+    ) -> np.ndarray:
+        """Burn the configured HUD into `frame` (no-op when hud_mode is off)."""
+        geometry = self._geometry(frame.shape, config, time.monotonic())
+        return self._hud.render(frame, thermal, config, telemetry, geometry)
+
     def markers(
         self,
         thermal: ThermalFrame | None,

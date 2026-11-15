@@ -104,7 +104,6 @@ class CardputerBridge:
     def __init__(self, client):
         self.client = client
         self.menu = False
-        self.hud = HudMode.TACTICAL.value
         self.palette = PALETTE
         self.message = ""
         self.message_until = 0.0
@@ -136,7 +135,8 @@ class CardputerBridge:
         elif key == "6":
             self.client.request("record", action="toggle")
         elif key == "7":
-            self.hud = HUD_MODES[(HUD_MODES.index(self.hud) + 1) % len(HUD_MODES)]
+            mode = HUD_MODES[(HUD_MODES.index(config["hud_mode"]) + 1) % len(HUD_MODES)]
+            self.client.request("set", name="hud_mode", value=mode)
         elif key == "8":
             mode = MODES[(MODES.index(config["mode"]) + 1) % len(MODES)]
             self.client.request("mode", mode=mode)
@@ -151,7 +151,7 @@ class CardputerBridge:
     # One preview request per packet: it carries the JPEG and full status.
     def packet(self):
         try:
-            response = self.client.request("preview", width=PREVIEW_SIZE[0], height=PREVIEW_SIZE[1])
+            response = self.client.request("preview", width=PREVIEW_SIZE[0], height=PREVIEW_SIZE[1], layer="clean")
         except OSError as exc:
             log = BootLog()
             log.set("ENGINE", State.FAIL)
@@ -173,8 +173,10 @@ class CardputerBridge:
             return
         if (frame.shape[1], frame.shape[0]) != PREVIEW_SIZE:
             frame = cv2.resize(frame, PREVIEW_SIZE, interpolation=cv2.INTER_AREA)
-        if self.hud != HudMode.OFF.value:
-            corners = CornerMarks.SHOW if self.hud == HudMode.TACTICAL.value else CornerMarks.HIDE
+        # The screen mirrors the HUD mode that snapshots and recordings burn in.
+        hud = status["config"].get("hud_mode", HudMode.OFF.value)
+        if hud != HudMode.OFF.value:
+            corners = CornerMarks.SHOW if hud == HudMode.TACTICAL.value else CornerMarks.HIDE
             self._overlay.overlay(frame, self._markers(status), self.palette, corners)
         self.pixels = cv2.cvtColor(frame, cv2.COLOR_BGR2BGRA).tobytes()
 
@@ -295,7 +297,7 @@ def boot(process, client, bridge) -> bool:
 
         # Engine socket up -> camera -> thermal -> first composite.
         try:
-            response = client.request("preview", width=PREVIEW_SIZE[0], height=PREVIEW_SIZE[1])
+            response = client.request("preview", width=PREVIEW_SIZE[0], height=PREVIEW_SIZE[1], layer="clean")
         except OSError:
             emit(bridge.boot_packet(log, ""))
             continue
@@ -351,11 +353,10 @@ def main():
         store.update("refresh_hz", THERMAL_REFRESH_HZ)
         store.update("host_fps_cap", COMPOSITE_FPS)
         store.update("hud_palette", PALETTE)
+        store.update("hud_mode", HudMode.TACTICAL.value)
         store.update("scale_x", 1.0)
         store.update("scale_y", 1.0)
     store.update("image_source", "rgb")
-    # The screen draws telemetry beside the preview; keep frames clean.
-    store.update("hud_mode", HudMode.OFF.value)
     process = subprocess.Popen(
         [sys.executable, "-m", "auracam.daemon", "--socket", str(socket_path), "--config", str(config_path)],
         stdout=sys.stderr,

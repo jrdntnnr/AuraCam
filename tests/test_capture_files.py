@@ -11,7 +11,7 @@ import numpy as np
 
 from auracam.compositor import AuraCompositor
 from auracam.config import AuraConfig
-from auracam.daemon import _RECORD_END, AuraDaemon
+from auracam.daemon import FrameLayer, _RECORD_END, AuraDaemon
 from auracam.frames import HudTelemetry
 
 
@@ -73,6 +73,8 @@ def capture_daemon(output_dir):
     daemon._frame_lock = threading.Lock()
     daemon._jpeg_lock = threading.Lock()
     daemon._jpeg_size = None
+    daemon._jpeg_layer = FrameLayer.HUD
+    daemon._latest_clean = None
     daemon._record_lock = threading.Lock()
     daemon._record_error = None
     daemon._record_frames = 0
@@ -134,6 +136,27 @@ class CaptureFileTest(unittest.TestCase):
             decoded = cv2.imdecode(np.frombuffer(small, np.uint8), cv2.IMREAD_COLOR)
             self.assertEqual(decoded.shape[:2], (144, 192))
             self.assertGreater(len(full), len(small))
+
+    def test_preview_layers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            daemon = capture_daemon(directory)
+            daemon._latest_jpeg = None
+            daemon._jpeg_sequence = -1
+            daemon._latest_frame = np.full((480, 640, 3), 255, dtype=np.uint8)
+            daemon._latest_clean = np.zeros((480, 640, 3), dtype=np.uint8)
+            daemon.config_store = mock.Mock()
+            daemon.config_store.get.return_value = AuraConfig(jpeg_quality=88)
+
+            clean, _ = daemon._frame_jpeg((192, 144), FrameLayer.CLEAN)
+            hud, _ = daemon._frame_jpeg((192, 144), FrameLayer.HUD)
+            snapshot, _ = daemon._frame_jpeg()
+
+            def mean(jpeg):
+                return cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR).mean()
+
+            self.assertLess(mean(clean), 10)
+            self.assertGreater(mean(hud), 245)
+            self.assertGreater(mean(snapshot), 245)
 
     def test_recording_is_published_after_writer_release(self):
         with tempfile.TemporaryDirectory() as directory:

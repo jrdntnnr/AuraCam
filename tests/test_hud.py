@@ -101,6 +101,14 @@ class HudRendererTest(unittest.TestCase):
         self.assertEqual((high.x, high.y, high.value), (110, 70, 41.5))
         self.assertEqual((low.x, low.y, low.value), (550, 410, 17.25))
 
+    def test_render_hud_burns_selected_mode(self):
+        compositor = AuraCompositor()
+        clean = np.zeros((480, 640, 3), dtype=np.uint8)
+        off = compositor.render_hud(clean.copy(), self.thermal, AuraConfig(hud_mode="off"), self.data)
+        tactical = compositor.render_hud(clean.copy(), self.thermal, AuraConfig(hud_mode="tactical"), self.data)
+        self.assertFalse(off.any())
+        self.assertTrue(tactical.any())
+
     def test_panel_overlay_draws_markers(self):
         frame = np.zeros((144, 192, 3), dtype=np.uint8)
         HudRenderer().overlay(frame, [Marker("P", 96, 72, 29.0)], "green", CornerMarks.HIDE)
