@@ -130,6 +130,8 @@ def main():
     store = ConfigStore(config_path)
     if not config_path.exists():
         store.update("refresh_hz", 8.0)
+        store.update("scale_x", 1.0)
+        store.update("scale_y", 1.0)
     store.update("image_source", "rgb")
     process = subprocess.Popen(
         [sys.executable, "-m", "auracam.daemon", "--socket", str(socket_path), "--config", str(config_path)],
