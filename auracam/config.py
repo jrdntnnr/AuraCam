@@ -9,7 +9,7 @@ from typing import Any
 
 from .control import CAMERA_FOVS, CAMERA_LOOKS, HUD_MODES, HUD_PALETTES, MODES
 
-PALETTES = ("aura", "inferno", "turbo", "ocean", "magma")
+PALETTES = ("aura", "inferno", "turbo", "ocean", "magma", "ironbow", "amber", "whitehot", "arctic")
 REPRESENTATIONS = ("temperature", "image")
 INTERPOLATIONS = ("nearest", "bilinear", "cubic")
 

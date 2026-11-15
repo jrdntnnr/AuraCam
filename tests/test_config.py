@@ -41,6 +41,13 @@ class ConfigStoreTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 store.update("camera_look", "sepia")
 
+    def test_new_gradients_are_valid_palettes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = ConfigStore(Path(directory) / "config.json")
+            for palette in ("ironbow", "amber", "whitehot", "arctic"):
+                store.update("palette", palette)
+                self.assertEqual(store.get().palette, palette)
+
     def test_thermal_range_remains_ordered(self):
         with tempfile.TemporaryDirectory() as directory:
             store = ConfigStore(Path(directory) / "config.json")

@@ -55,7 +55,11 @@ ARROWS = {"U": (0, -1), "D": (0, 1), "L": (-1, 0), "R": (1, 0)}
 # Index by coarse flag: (fine, coarse). Moves are output-frame pixels.
 MOVE_STEPS = (2, 10)
 ZOOM_STEPS = (0.01, 0.05)
-THRESHOLD_STEPS = {"5": -1.0, "6": -0.5, "7": 0.5, "8": 1.0}
+# Threshold step in C, by coarse flag: (fine, coarse).
+THRESHOLD_STEPS = (0.5, 2.0)
+# Thermal gradients offered on the Cardputer, in cycle order.
+GRADIENTS = ("aura", "ironbow", "amber", "whitehot", "turbo", "arctic")
+GRADIENT_HOLD_S = 1.5
 EXT_POWER = Path("/sys/class/leds/ext_5v_out/brightness")
 I2C_CLOCK = Path("/proc/device-tree/soc/i2c@7e804000/clock-frequency")
 
@@ -64,7 +68,7 @@ class Screen(Enum):
     CAPTURE = "capture"
     MENU = "menu"
     CALIBRATE = "calibrate"
-    THRESHOLD = "threshold"
+    IR = "ir"
 
 
 class Kind(str, Enum):
@@ -119,6 +123,7 @@ class CardputerBridge:
         self.client = client
         self.screen = Screen.CAPTURE
         self.coarse = False
+        self.coarse_threshold = False
         self._calibration: dict = {}
         self.palette = PALETTE
         self.message = ""
@@ -135,7 +140,7 @@ class CardputerBridge:
             Screen.CAPTURE: self._capture_key,
             Screen.MENU: self._menu_key,
             Screen.CALIBRATE: self._calibrate_key,
-            Screen.THRESHOLD: self._threshold_key,
+            Screen.IR: self._ir_key,
         }
         handlers[self.screen](key, config)
 
@@ -168,7 +173,7 @@ class CardputerBridge:
             self._set("grid", True)
             self.screen = Screen.CALIBRATE
         elif key == "8":
-            self.screen = Screen.THRESHOLD
+            self.screen = Screen.IR
 
     def _calibrate_key(self, key, config):
         if key in ARROWS:
@@ -194,11 +199,21 @@ class CardputerBridge:
                 self._set(name, value)
             self.screen = Screen.CAPTURE
 
-    def _threshold_key(self, key, config):
+    def _ir_key(self, key, config):
         if key == "4":
             self.screen = Screen.CAPTURE
-        elif key in THRESHOLD_STEPS:
-            self.client.request("adjust", name="threshold", delta=THRESHOLD_STEPS[key])
+        elif key == "5":
+            # Unlisted palettes (set from the CLI) restart the cycle.
+            current = config.get("palette")
+            index = GRADIENTS.index(current) + 1 if current in GRADIENTS else 0
+            palette = GRADIENTS[index % len(GRADIENTS)]
+            self._set("palette", palette)
+            self.say(palette.upper(), GRADIENT_HOLD_S)
+        elif key in ("6", "7"):
+            step = THRESHOLD_STEPS[self.coarse_threshold]
+            self.client.request("adjust", name="threshold", delta=step if key == "7" else -step)
+        elif key == "8":
+            self.coarse_threshold = not self.coarse_threshold
 
     def _cycle(self, config, name, choices):
         self._set(name, choices[(choices.index(config[name]) + 1) % len(choices)])
@@ -261,8 +276,8 @@ class CardputerBridge:
             return _clean(self.message)[:HEADER_CHARS]
         if self.screen is Screen.CALIBRATE:
             return "CALIBRATE"
-        if self.screen is Screen.THRESHOLD:
-            return "THRESHOLD"
+        if self.screen is Screen.IR:
+            return "IR"
         recording = status["recording"]
         if recording.get("saving"):
             return "SAVING"
@@ -318,12 +333,13 @@ class CardputerBridge:
 
     def _actions(self, status) -> str:
         if self.screen is Screen.MENU:
-            return "BACK|LOOK|WIDE|CAL|TEMP"
+            return "BACK|LOOK|WIDE|CAL|IR"
         if self.screen is Screen.CALIBRATE:
             step = "COARSE" if self.coarse else "FINE"
             return f"SAVE|ZOOM -|ZOOM +|{step}|CANCEL"
-        if self.screen is Screen.THRESHOLD:
-            return "DONE|-1.0|-0.5|+0.5|+1.0"
+        if self.screen is Screen.IR:
+            step = THRESHOLD_STEPS[self.coarse_threshold]
+            return f"DONE|COLORS|TEMP -|TEMP +|{step:.1f}C"
         record = "STOP" if status["recording"]["active"] else "RECORD"
         return f"MENU|SNAP|{record}|HUD|MODE"
 

@@ -45,9 +45,22 @@ _AURA_LUT = _palette_lut(
 )
 
 
-def _aura_palette(norm: np.ndarray) -> np.ndarray:
-    gray = np.clip(norm * 255.0, 0, 255).astype(np.uint8)
-    return cv2.applyColorMap(gray, _AURA_LUT)
+def _rgb_lut(*stops: tuple[int, int, int]) -> np.ndarray:
+    """LUT from cold-to-hot RGB stops (OpenCV wants BGR)."""
+    return _palette_lut(np.array([stop[::-1] for stop in stops], dtype=np.float32))
+
+
+# Gradients defined here rather than by OpenCV, cold to hot.
+_CUSTOM_LUTS = {
+    "aura": _AURA_LUT,
+    # Classic thermal-camera ramp.
+    "ironbow": _rgb_lut((0, 0, 0), (32, 0, 140), (204, 0, 119), (255, 140, 0), (255, 215, 0), (255, 255, 255)),
+    # Through the HUD amber (0xFFC200) so the overlay matches the screen.
+    "amber": _rgb_lut((0, 0, 0), (110, 55, 0), (255, 194, 0), (255, 240, 200)),
+    "whitehot": _rgb_lut((0, 0, 0), (255, 255, 255)),
+    # Blues; cold areas read as deep, hot as white.
+    "arctic": _rgb_lut((0, 0, 0), (0, 20, 80), (0, 90, 200), (60, 200, 255), (230, 250, 255)),
+}
 
 
 class AuraCompositor:
@@ -252,9 +265,9 @@ class AuraCompositor:
 
     @staticmethod
     def _colorize(norm: np.ndarray, palette: str) -> np.ndarray:
-        if palette == "aura":
-            return _aura_palette(norm)
         gray = np.clip(norm * 255, 0, 255).astype(np.uint8)
+        if palette in _CUSTOM_LUTS:
+            return cv2.applyColorMap(gray, _CUSTOM_LUTS[palette])
         return cv2.applyColorMap(gray, _CV_PALETTES.get(palette, cv2.COLORMAP_INFERNO))
 
     @staticmethod

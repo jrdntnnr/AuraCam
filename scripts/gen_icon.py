@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""Draw the AuraCam launcher icon: HUD viewfinder brackets around a heat aura.
+"""Draw the AuraCam launcher icon: HUD frame brackets around a chevron.
 
     uv run --with pillow python scripts/gen_icon.py cardputer/auracam.png
 
-  +--            --+
-  |     .----.     |      brackets   tactical HUD frame marks
-        ( (  +  ) )       rings      thermal aura, fading outward
-  |     '----'     |      core       probe point
-  +--            --+
+  +--          --+
+  |              |
+         /\               brackets   tactical HUD frame marks
+        /  \              chevron    centred, pointing up
+  |              |
+  +--          --+
 """
 
 from __future__ import annotations
@@ -25,9 +26,9 @@ FRAME = (12, 14, 88, 86)
 BRACKET_ARM = 18
 BRACKET_WIDTH = 6
 CENTER = (50, 50)
-RINGS = ((30, 3, 90), (23, 4, 160), (16, 5, 235))  # radius, width, alpha
-CORE_RADIUS = 7
-TICK = (32, 37, 4)  # inner radius, outer radius, width
+CHEVRON_HALF_WIDTH = 17
+CHEVRON_HEIGHT = 17
+CHEVRON_WIDTH = 7
 
 
 def scaled(value: float) -> int:
@@ -45,27 +46,24 @@ def brackets(draw: ImageDraw.ImageDraw) -> None:
             draw.rectangle(box, AMBER + (255,))
 
 
-def aura(image: Image.Image) -> None:
+def chevron(draw: ImageDraw.ImageDraw) -> None:
+    """Upward chevron centred in the frame, drawn as one mitred stroke."""
     cx, cy = CENTER
-    for radius, width, alpha in RINGS:
-        layer = Image.new("RGBA", image.size)
-        ImageDraw.Draw(layer).ellipse(
-            [scaled(cx - radius), scaled(cy - radius), scaled(cx + radius), scaled(cy + radius)],
-            outline=AMBER + (alpha,),
-            width=scaled(width),
-        )
-        image.alpha_composite(layer)
-    draw = ImageDraw.Draw(image)
-    draw.ellipse([scaled(cx - CORE_RADIUS), scaled(cy - CORE_RADIUS), scaled(cx + CORE_RADIUS), scaled(cy + CORE_RADIUS)], AMBER + (255,))
-    inner, outer, width = TICK
-    for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-        draw.line([(scaled(cx + dx * inner), scaled(cy + dy * inner)), (scaled(cx + dx * outer), scaled(cy + dy * outer))], AMBER + (255,), scaled(width))
+    top = cy - CHEVRON_HEIGHT / 2
+    bottom = cy + CHEVRON_HEIGHT / 2
+    points = [
+        (scaled(cx - CHEVRON_HALF_WIDTH), scaled(bottom)),
+        (scaled(cx), scaled(top)),
+        (scaled(cx + CHEVRON_HALF_WIDTH), scaled(bottom)),
+    ]
+    draw.line(points, AMBER + (255,), scaled(CHEVRON_WIDTH), joint="curve")
 
 
 def main() -> None:
     image = Image.new("RGBA", (scaled(SIZE), scaled(SIZE)))
-    brackets(ImageDraw.Draw(image))
-    aura(image)
+    draw = ImageDraw.Draw(image)
+    brackets(draw)
+    chevron(draw)
     image.resize((SIZE, SIZE), Image.LANCZOS).save(sys.argv[1])
 
 

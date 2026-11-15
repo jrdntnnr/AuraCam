@@ -11,7 +11,7 @@ recording on normal exit.
 | 5 | Snapshot | Camera look: natural, mono, hicon, fast |
 | 6 | Record/stop | Wide field of view on/off |
 | 7 | HUD mode: off, minimal, tactical | Calibrate thermal frame |
-| 8 | Aura mode | Threshold: -1.0, -0.5, +0.5, +1.0 C |
+| 8 | Aura mode | IR: thermal colors and threshold |
 
 The Cardputer always uses the onboard IMX219 through Picamera2 (the bridge
 forces `image_source` to `rgb` at start); the USB UV driver remains for the
@@ -23,6 +23,10 @@ Calibrate shows the thermal grid. F, Z, X, C (the Cardputer's arrows) move
 the thermal frame, 5/6 zoom it out/in keeping its aspect, 7 switches fine (2 px,
 1 %) and coarse (10 px, 5 %) steps, 4 saves and 8 restores the values from when
 calibration began. Calibrate in the normal (not wide) view.
+
+IR: 5 cycles the thermal gradient (aura, ironbow, amber, whitehot, turbo,
+arctic; the name shows in the header), 6/7 lower/raise the threshold and 8
+switches the step between 0.5 C and 2 C.
 
 Camera looks are IMX219 ISP controls (no CPU cost): mono is zero
 saturation, hicon raises contrast and sharpening with highlight-priority

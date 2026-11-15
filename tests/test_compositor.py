@@ -10,6 +10,26 @@ from auracam.thermal import ThermalFrame
 
 
 class CompositorTest(unittest.TestCase):
+    def test_gradient_end_colours(self):
+        # BGR at the cold (0) and hot (1) ends.
+        expected = {
+            "ironbow": ((0, 0, 0), (255, 255, 255)),
+            "amber": ((0, 0, 0), (200, 240, 255)),
+            "whitehot": ((0, 0, 0), (255, 255, 255)),
+            "arctic": ((0, 0, 0), (255, 250, 230)),
+        }
+        field = np.array([[0.0, 1.0]], dtype=np.float32)
+        for palette, (cold, hot) in expected.items():
+            color = AuraCompositor._colorize(field, palette)
+            self.assertEqual(tuple(int(v) for v in color[0, 0]), cold, palette)
+            self.assertEqual(tuple(int(v) for v in color[0, 1]), hot, palette)
+
+    def test_amber_gradient_passes_hud_amber(self):
+        field = np.linspace(0.0, 1.0, 256, dtype=np.float32)[None, :]
+        color = AuraCompositor._colorize(field, "amber").reshape(-1, 3).astype(int)
+        distance = np.abs(color - np.array([0, 194, 255])).sum(axis=1).min()
+        self.assertLess(distance, 12)
+
     def setUp(self):
         field = np.linspace(18, 42, 32 * 24, dtype=np.float32).reshape(24, 32)
         self.thermal = ThermalFrame(

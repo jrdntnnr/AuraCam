@@ -125,14 +125,27 @@ class CardputerTest(unittest.TestCase):
             {"offset_x": 5, "offset_y": -3, "scale_x": 1.0, "scale_y": 1.0, "grid": False},
         )
 
-    def test_threshold_screen_steps(self):
-        client = FakeClient(threshold=26.0)
+    def test_ir_screen_colours_and_threshold(self):
+        client = FakeClient(threshold=26.0, palette="aura")
         bridge = CardputerBridge(client)
         for key in "485":
             bridge.action(key)
-        self.assertEqual(client.config["threshold"], 25.0)
+        self.assertEqual(client.config["palette"], "ironbow")
+        self.assertEqual(bridge.message, "IRONBOW")
+        bridge.action("6")
+        self.assertEqual(client.config["threshold"], 25.5)
+        bridge.action("8")
+        bridge.action("7")
+        self.assertEqual(client.config["threshold"], 27.5)
         bridge.action("4")
         self.assertEqual(bridge.screen, Screen.CAPTURE)
+
+    def test_ir_colours_wrap_from_unlisted_palette(self):
+        client = FakeClient(palette="magma")
+        bridge = CardputerBridge(client)
+        for key in "485":
+            bridge.action(key)
+        self.assertEqual(client.config["palette"], "aura")
 
     def test_menu_keys_cycle_look_and_fov(self):
         client = MagicMock()
