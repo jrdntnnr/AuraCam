@@ -1,9 +1,32 @@
+/*
+ * AuraCam frontend for the Cardputer Zero's 320x170 panel.
+ *
+ * Forks the Python bridge (auracam/cardputer.py), reads fixed-size packets
+ * from it and draws them with LVGL; keys 4-8 go back to it on stdin.
+ *
+ *   +--------------------------------------------------------------+
+ *   | AURACAM                                            REC 00:12 |
+ *   |--------------------------------------------------------------|
+ *   | RGB 15   | +------------------------------+ |       P 24.1C |
+ *   | IR  16   | |                              | |       H 33.0C |
+ *   |          | |     192x144 preview with     | |       L 19.2C |
+ *   | THRESHOLD| |     P/H/L markers            | |               |
+ *   | 26.0C    | |                              | |               |
+ *   |          | +------------------------------+ |               |
+ *   |--------------------------------------------------------------|
+ *   |  MENU      SNAP      RECORD      HUD      MODE               |
+ *   +--------------------------------------------------------------+
+ *
+ * While starting, the same header sits over a terminal boot log whose
+ * running steps show a rotating | / - \ cursor.
+ */
 #include "lvgl.h"
 #include "src/drivers/display/fb/lv_linux_fbdev.h"
 #include <array>
 #include <chrono>
 #include <csignal>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
 #include <linux/input.h>
@@ -11,38 +34,77 @@
 #include <sys/ioctl.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <vector>
 
-LV_FONT_DECLARE(share_tech_mono_12);
-LV_FONT_DECLARE(share_tech_mono_20);
+LV_FONT_DECLARE(aura_pixel_7);
 
+// Panel and packet geometry (must match auracam/cardputer.py).
 constexpr int kScreenWidth = 320;
 constexpr int kScreenHeight = 170;
 constexpr int kWidth = 192;
 constexpr int kHeight = 144;
-constexpr int kTextBytes = 512;
+constexpr int kTextBytes = 1024;
 constexpr int kPixelBytes = kWidth * kHeight * 4;
-constexpr int kHoldMs = 700;
+
+// Layout.
+constexpr int kMargin = 2;
+constexpr int kHeaderRuleY = 11;
+constexpr int kPreviewX = (kScreenWidth - kWidth) / 2;
+constexpr int kPreviewY = 13;
+constexpr int kSideWidth = kPreviewX - 2 * kMargin;
+constexpr int kSideY = kPreviewY + 1;
+constexpr int kFooterRuleY = kPreviewY + kHeight + 1;
+constexpr int kFooterY = kFooterRuleY + 2;
 constexpr int kActionCount = 5;
 constexpr int kActionWidth = kScreenWidth / kActionCount;
-constexpr int kActionBarY = kHeight + 5;
-constexpr int kScanBarWidth = 200;
-constexpr int kScanBarHeight = 4;
-constexpr int kScanPeriodMs = 1600;
-constexpr uint32_t kBackground = 0x080e0c;
-constexpr uint32_t kPhosphor = 0x7fe6ad;
-constexpr uint32_t kPhosphorDim = 0x2a5a40;
+constexpr int kLogY = kPreviewY + 2;
+constexpr size_t kLeaderColumn = 16;
+
+// Timing.
+constexpr int kHoldMs = 700;
+constexpr uint32_t kSpinnerMs = 110;
+constexpr uint32_t kCursorMs = 500;
+constexpr useconds_t kLoopSleepUs = 5000;
+
+// Colours: the bridge sends the HUD palette; dim text is a mix toward black.
+constexpr uint32_t kBackground = 0x000000;
+constexpr uint32_t kDefaultColor = 0xffc200;
+constexpr lv_opa_t kDimMix = LV_OPA_40;
+
+constexpr char kSpinner[] = {'|', '/', '-', '\\'};
+constexpr char kFieldSeparator = '\t';
+constexpr char kStateSeparator = '|';
+constexpr char kStateRunning[] = "RUN";
 
 volatile sig_atomic_t running = 1;
 
-enum class Phase { Loading, Live };
+enum class Phase { Boot, Live };
+
+// Packet fields, in order.
+enum Field { kKind, kColor, kHeader, kBody, kRight, kActions, kFooter, kFieldCount };
+
+struct Step {
+    std::string label;
+    std::string state;
+};
 
 struct Ui {
-    lv_obj_t* loading;
-    lv_obj_t* loading_status;
+    lv_style_t text;
+    lv_style_t dim;
+    lv_style_t rule;
+    uint32_t color;
+    lv_obj_t* title;
+    lv_obj_t* status;
+    lv_obj_t* log;
+    lv_obj_t* footer;
     lv_obj_t* image;
-    lv_obj_t* info;
+    lv_obj_t* left;
+    lv_obj_t* right;
     std::array<lv_obj_t*, kActionCount> actions;
+    std::vector<Step> steps;
     Phase phase;
+    uint32_t tick;
+    bool cursor;
 };
 
 uint32_t ticks() {
@@ -71,39 +133,61 @@ int keyboard() {
     return -1;
 }
 
-lv_obj_t* label(lv_obj_t* parent, const lv_font_t* font, lv_text_align_t align) {
+std::vector<std::string> split(const std::string& text, char separator) {
+    std::vector<std::string> parts;
+    size_t start = 0;
+    while (true) {
+        const size_t end = text.find(separator, start);
+        parts.push_back(text.substr(start, end - start));
+        if (end == std::string::npos) {
+            return parts;
+        }
+        start = end + 1;
+    }
+}
+
+// Only touch LVGL when text changes, so unchanged labels are not redrawn.
+void set_text(lv_obj_t* label, const std::string& text) {
+    if (text == lv_label_get_text(label)) {
+        return;
+    }
+    lv_label_set_text(label, text.c_str());
+}
+
+void show(lv_obj_t* object, bool visible) {
+    lv_obj_set_flag(object, LV_OBJ_FLAG_HIDDEN, !visible);
+}
+
+lv_obj_t* label(lv_obj_t* parent, lv_style_t* style, int x, int y, int width, lv_text_align_t align) {
     auto* object = lv_label_create(parent);
-    lv_obj_set_style_text_font(object, font, 0);
-    lv_obj_set_style_text_color(object, lv_color_hex(kPhosphor), 0);
+    lv_obj_add_style(object, style, 0);
+    lv_label_set_long_mode(object, LV_LABEL_LONG_MODE_CLIP);
     lv_obj_set_style_text_align(object, align, 0);
+    lv_obj_set_pos(object, x, y);
+    lv_obj_set_width(object, width);
     lv_label_set_text(object, "");
     return object;
 }
 
-void scan_step(void* bar, int32_t value) {
-    lv_bar_set_value(static_cast<lv_obj_t*>(bar), value, LV_ANIM_OFF);
+void rule(lv_obj_t* parent, lv_style_t* style, int y) {
+    auto* line = lv_obj_create(parent);
+    lv_obj_remove_style_all(line);
+    lv_obj_add_style(line, style, 0);
+    lv_obj_set_pos(line, 0, y);
+    lv_obj_set_size(line, kScreenWidth, 1);
 }
 
-lv_obj_t* scan_bar(lv_obj_t* parent) {
-    auto* bar = lv_bar_create(parent);
-    lv_obj_set_size(bar, kScanBarWidth, kScanBarHeight);
-    lv_obj_align(bar, LV_ALIGN_CENTER, 0, 12);
-    lv_bar_set_range(bar, 0, 100);
-    lv_obj_set_style_bg_color(bar, lv_color_hex(kPhosphorDim), LV_PART_MAIN);
-    lv_obj_set_style_bg_color(bar, lv_color_hex(kPhosphor), LV_PART_INDICATOR);
-    lv_obj_set_style_radius(bar, 0, LV_PART_MAIN);
-    lv_obj_set_style_radius(bar, 0, LV_PART_INDICATOR);
-
-    lv_anim_t animation;
-    lv_anim_init(&animation);
-    lv_anim_set_var(&animation, bar);
-    lv_anim_set_values(&animation, 0, 100);
-    lv_anim_set_duration(&animation, kScanPeriodMs);
-    lv_anim_set_playback_duration(&animation, kScanPeriodMs);
-    lv_anim_set_repeat_count(&animation, LV_ANIM_REPEAT_INFINITE);
-    lv_anim_set_exec_cb(&animation, scan_step);
-    lv_anim_start(&animation);
-    return bar;
+void apply_color(Ui& ui, uint32_t color) {
+    if (color == ui.color) {
+        return;
+    }
+    ui.color = color;
+    const lv_color_t text = lv_color_hex(color);
+    const lv_color_t dim = lv_color_mix(text, lv_color_hex(kBackground), kDimMix);
+    lv_style_set_text_color(&ui.text, text);
+    lv_style_set_text_color(&ui.dim, dim);
+    lv_style_set_bg_color(&ui.rule, dim);
+    lv_obj_report_style_change(nullptr);
 }
 
 Ui build_ui() {
@@ -112,88 +196,131 @@ Ui build_ui() {
     lv_obj_remove_flag(screen, LV_OBJ_FLAG_SCROLLABLE);
 
     Ui ui{};
-    ui.phase = Phase::Loading;
+    ui.phase = Phase::Boot;
+    ui.color = 0;
+    lv_style_init(&ui.text);
+    lv_style_init(&ui.dim);
+    lv_style_init(&ui.rule);
+    lv_style_set_text_font(&ui.text, &aura_pixel_7);
+    lv_style_set_text_font(&ui.dim, &aura_pixel_7);
+    lv_style_set_bg_opa(&ui.rule, LV_OPA_COVER);
+    apply_color(ui, kDefaultColor);
 
-    ui.loading = lv_obj_create(screen);
-    lv_obj_set_size(ui.loading, kScreenWidth, kScreenHeight);
-    lv_obj_set_pos(ui.loading, 0, 0);
-    lv_obj_set_style_bg_color(ui.loading, lv_color_hex(kBackground), 0);
-    lv_obj_set_style_border_width(ui.loading, 0, 0);
-    lv_obj_set_style_radius(ui.loading, 0, 0);
-    lv_obj_set_style_pad_all(ui.loading, 0, 0);
-    lv_obj_remove_flag(ui.loading, LV_OBJ_FLAG_SCROLLABLE);
+    // Terminal header shared by both phases.
+    const int full = kScreenWidth - 2 * kMargin;
+    ui.title = label(screen, &ui.text, kMargin, 1, full / 2, LV_TEXT_ALIGN_LEFT);
+    ui.status = label(screen, &ui.dim, kScreenWidth / 2, 1, kScreenWidth / 2 - kMargin, LV_TEXT_ALIGN_RIGHT);
+    lv_label_set_text(ui.title, "AURACAM");
+    rule(screen, &ui.rule, kHeaderRuleY);
+    rule(screen, &ui.rule, kFooterRuleY);
 
-    auto* title = label(ui.loading, &share_tech_mono_20, LV_TEXT_ALIGN_CENTER);
-    lv_label_set_text(title, "AURACAM");
-    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 34);
+    // Boot: log under the header, footer line at the bottom.
+    ui.log = label(screen, &ui.text, kMargin, kLogY, full, LV_TEXT_ALIGN_LEFT);
+    ui.footer = label(screen, &ui.dim, kMargin, kFooterY, full, LV_TEXT_ALIGN_LEFT);
+    ui.steps = {{"BRIDGE", kStateRunning}};
 
-    auto* subtitle = label(ui.loading, &share_tech_mono_12, LV_TEXT_ALIGN_CENTER);
-    lv_label_set_text(subtitle, "RGB / UV + MLX90640 THERMAL FUSION");
-    lv_obj_set_style_text_color(subtitle, lv_color_hex(kPhosphorDim), 0);
-    lv_obj_align(subtitle, LV_ALIGN_TOP_MID, 0, 60);
-
-    scan_bar(ui.loading);
-
-    ui.loading_status = label(ui.loading, &share_tech_mono_12, LV_TEXT_ALIGN_CENTER);
-    lv_obj_set_width(ui.loading_status, kScreenWidth - 16);
-    lv_obj_align(ui.loading_status, LV_ALIGN_BOTTOM_MID, 0, -28);
-    lv_label_set_text(ui.loading_status, "INITIALIZING");
-
-    auto* footer = label(ui.loading, &share_tech_mono_12, LV_TEXT_ALIGN_CENTER);
-    lv_label_set_text(footer, "HOLD ESC TO EXIT");
-    lv_obj_set_style_text_color(footer, lv_color_hex(kPhosphorDim), 0);
-    lv_obj_align(footer, LV_ALIGN_BOTTOM_MID, 0, -6);
-
+    // Live: centered preview, telemetry columns, key labels.
     ui.image = lv_image_create(screen);
-    lv_obj_set_pos(ui.image, 0, 0);
-    lv_obj_add_flag(ui.image, LV_OBJ_FLAG_HIDDEN);
-
-    ui.info = label(screen, &share_tech_mono_12, LV_TEXT_ALIGN_LEFT);
-    lv_obj_set_pos(ui.info, kWidth + 4, 2);
-    lv_obj_set_size(ui.info, kScreenWidth - kWidth - 6, kHeight - 4);
-    lv_obj_add_flag(ui.info, LV_OBJ_FLAG_HIDDEN);
-
+    lv_obj_set_pos(ui.image, kPreviewX, kPreviewY);
+    ui.left = label(screen, &ui.text, kMargin, kSideY, kSideWidth, LV_TEXT_ALIGN_LEFT);
+    ui.right = label(screen, &ui.text, kPreviewX + kWidth + kMargin, kSideY, kSideWidth, LV_TEXT_ALIGN_RIGHT);
     for (int i = 0; i < kActionCount; ++i) {
-        ui.actions[i] = label(screen, &share_tech_mono_12, LV_TEXT_ALIGN_CENTER);
-        lv_obj_set_pos(ui.actions[i], i * kActionWidth, kActionBarY);
-        lv_obj_set_width(ui.actions[i], kActionWidth);
-        lv_obj_add_flag(ui.actions[i], LV_OBJ_FLAG_HIDDEN);
+        ui.actions[i] = label(screen, &ui.text, i * kActionWidth, kFooterY, kActionWidth, LV_TEXT_ALIGN_CENTER);
     }
     return ui;
 }
 
 void show_phase(Ui& ui, Phase phase) {
-    if (ui.phase == phase) {
-        return;
-    }
     ui.phase = phase;
     const bool live = phase == Phase::Live;
-    lv_obj_set_flag(ui.loading, LV_OBJ_FLAG_HIDDEN, live);
-    lv_obj_set_flag(ui.image, LV_OBJ_FLAG_HIDDEN, !live);
-    lv_obj_set_flag(ui.info, LV_OBJ_FLAG_HIDDEN, !live);
+    show(ui.log, !live);
+    show(ui.footer, !live);
+    show(ui.image, live);
+    show(ui.left, live);
+    show(ui.right, live);
     for (auto* action : ui.actions) {
-        lv_obj_set_flag(action, LV_OBJ_FLAG_HIDDEN, !live);
+        show(action, live);
     }
 }
 
-void apply_packet(Ui& ui, const std::string& text, lv_image_dsc_t& descriptor) {
-    const auto split = text.find('\t');
-    const std::string lines = text.substr(0, split);
-    std::string actions = split == std::string::npos ? "" : text.substr(split + 1);
-    if (actions.empty()) {
-        show_phase(ui, Phase::Loading);
-        lv_label_set_text(ui.loading_status, lines.c_str());
-        return;
+// "> CAPTURE ENGINE .............. OK", spinner on running steps, prompt last.
+std::string boot_log(const Ui& ui) {
+    const char spin = kSpinner[ui.tick % sizeof(kSpinner)];
+    std::string text;
+    for (const auto& step : ui.steps) {
+        std::string line = "> " + step.label + " ";
+        if (line.size() < kLeaderColumn) {
+            line.append(kLeaderColumn - line.size(), '.');
+        }
+        line += " ";
+        line += step.state == kStateRunning ? std::string(1, spin) : step.state;
+        text += line + "\n";
     }
-    show_phase(ui, Phase::Live);
-    lv_label_set_text(ui.info, lines.c_str());
-    for (auto* action : ui.actions) {
-        const auto separator = actions.find('|');
-        lv_label_set_text(action, actions.substr(0, separator).c_str());
-        actions = separator == std::string::npos ? "" : actions.substr(separator + 1);
+    text += ui.cursor ? ">_" : ">";
+    return text;
+}
+
+void render_boot(Ui& ui) {
+    set_text(ui.log, boot_log(ui));
+}
+
+void apply_boot(Ui& ui, const std::vector<std::string>& fields) {
+    ui.steps.clear();
+    for (const auto& line : split(fields[kBody], '\n')) {
+        const auto parts = split(line, kStateSeparator);
+        if (parts.size() == 2) {
+            ui.steps.push_back({parts[0], parts[1]});
+        }
+    }
+    set_text(ui.status, fields[kHeader]);
+    set_text(ui.footer, fields[kFooter]);
+    render_boot(ui);
+}
+
+void apply_live(Ui& ui, const std::vector<std::string>& fields, lv_image_dsc_t& descriptor) {
+    set_text(ui.status, fields[kHeader]);
+    set_text(ui.left, fields[kBody]);
+    set_text(ui.right, fields[kRight]);
+    const auto actions = split(fields[kActions], '|');
+    for (int i = 0; i < kActionCount; ++i) {
+        set_text(ui.actions[i], i < static_cast<int>(actions.size()) ? actions[i] : "");
     }
     lv_image_set_src(ui.image, &descriptor);
     lv_obj_invalidate(ui.image);
+}
+
+void apply_packet(Ui& ui, const std::string& text, lv_image_dsc_t& descriptor) {
+    const auto fields = split(text, kFieldSeparator);
+    if (fields.size() < kFieldCount) {
+        return;
+    }
+    apply_color(ui, std::strtoul(fields[kColor].c_str(), nullptr, 16));
+    const Phase phase = fields[kKind] == "LIVE" ? Phase::Live : Phase::Boot;
+    if (phase != ui.phase) {
+        show_phase(ui, phase);
+    }
+    if (phase == Phase::Boot) {
+        apply_boot(ui, fields);
+        return;
+    }
+    apply_live(ui, fields, descriptor);
+}
+
+// Spinner and cursor run on LVGL timers so they move even between packets.
+void spin(lv_timer_t* timer) {
+    auto* ui = static_cast<Ui*>(lv_timer_get_user_data(timer));
+    ui->tick++;
+    if (ui->phase == Phase::Boot) {
+        render_boot(*ui);
+    }
+}
+
+void blink(lv_timer_t* timer) {
+    auto* ui = static_cast<Ui*>(lv_timer_get_user_data(timer));
+    ui->cursor = !ui->cursor;
+    if (ui->phase == Phase::Boot) {
+        render_boot(*ui);
+    }
 }
 
 int main() {
@@ -205,6 +332,8 @@ int main() {
         fprintf(stderr, "Cardputer keyboard not found\n");
         return 1;
     }
+
+    // Bridge process: commands on its stdin, packets from its stdout.
     int commands[2], frames[2];
     if (pipe(commands) || pipe(frames)) {
         return 1;
@@ -233,6 +362,10 @@ int main() {
     auto* display = lv_linux_fbdev_create();
     lv_linux_fbdev_set_file(display, "/dev/fb_lcd");
     Ui ui = build_ui();
+    show_phase(ui, Phase::Boot);
+    render_boot(ui);
+    lv_timer_create(spin, kSpinnerMs, &ui);
+    lv_timer_create(blink, kCursorMs, &ui);
 
     std::array<unsigned char, kPixelBytes> pixels{};
     lv_image_dsc_t descriptor{};
@@ -248,6 +381,7 @@ int main() {
     size_t received = 0;
     uint32_t escape_at = 0;
     while (running) {
+        // Keys: hold Esc to quit, 4-8 go to the bridge.
         input_event event{};
         while (read(keys, &event, sizeof(event)) == sizeof(event)) {
             if (event.type != EV_KEY) {
@@ -271,6 +405,7 @@ int main() {
             running = 0;
         }
 
+        // Packets: accumulate until a whole one has arrived.
         ssize_t count = read(frames[0], packet.data() + received, packet.size() - received);
         if (count == 0) {
             running = 0;
@@ -284,7 +419,7 @@ int main() {
             received = 0;
         }
         lv_timer_handler();
-        usleep(5000);
+        usleep(kLoopSleepUs);
     }
 
     const char quit = 'q';

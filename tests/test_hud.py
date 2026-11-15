@@ -6,7 +6,7 @@ import numpy as np
 from auracam.compositor import AuraCompositor
 from auracam.config import AuraConfig
 from auracam.frames import HudTelemetry, OverlayGeometry, ThermalFrame
-from auracam.hud import HudRenderer
+from auracam.hud import CornerMarks, HudRenderer, Marker, glyph_rows, palette_rgb
 
 
 class HudRendererTest(unittest.TestCase):
@@ -90,6 +90,29 @@ class HudRendererTest(unittest.TestCase):
         self.assertEqual(points.probe, (15, 12))
         self.assertEqual(points.high, (26, 3))
         self.assertEqual(points.low, (4, 20))
+
+    def test_markers_in_output_pixels(self):
+        compositor = AuraCompositor()
+        config = AuraConfig(scale_x=1.0, scale_y=1.0, offset_x=0, offset_y=0)
+        markers = compositor.markers(self.thermal, config, (480, 640))
+        self.assertEqual([m.label for m in markers], ["P", "H", "L"])
+        probe, high, low = markers
+        self.assertEqual((probe.x, probe.y, probe.value), (330, 250, 29.0))
+        self.assertEqual((high.x, high.y, high.value), (110, 70, 41.5))
+        self.assertEqual((low.x, low.y, low.value), (550, 410, 17.25))
+
+    def test_panel_overlay_draws_markers(self):
+        frame = np.zeros((144, 192, 3), dtype=np.uint8)
+        HudRenderer().overlay(frame, [Marker("P", 96, 72, 29.0)], "green", CornerMarks.HIDE)
+        self.assertTrue(frame[72, 96].any())
+        self.assertFalse(frame[8, 8].any())
+        HudRenderer().overlay(frame, [], "green", CornerMarks.SHOW)
+        self.assertTrue(frame[8, 8].any())
+
+    def test_font_and_palette_helpers(self):
+        self.assertEqual(glyph_rows("a"), glyph_rows("A"))
+        self.assertEqual(glyph_rows("\u00e9"), glyph_rows("?"))
+        self.assertEqual(palette_rgb("green"), 0x84FF48)
 
     def test_rotated_thermal_points(self):
         renderer = HudRenderer()

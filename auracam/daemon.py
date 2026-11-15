@@ -59,6 +59,17 @@ _PREVIEW_COMMANDS = frozenset(
 )
 
 
+# Output frame shape (rows, columns) reported before the first composite.
+_DEFAULT_SHAPE = (480, 640)
+
+
+def _relative_brightness(frame: np.ndarray) -> float:
+    """Mean luma of a sparse sample, 0..1; not a calibrated UV index."""
+    sample = frame[::16, ::16].astype(np.float32)
+    luma = sample[..., 0] * 0.114 + sample[..., 1] * 0.587 + sample[..., 2] * 0.299
+    return min(1.0, max(0.0, float(np.mean(luma)) / 255.0))
+
+
 def _preview_size(request: dict[str, Any]) -> tuple[int, int] | None:
     """Optional `width`/`height` of a preview request; None keeps full size."""
     width = request.get("width")
@@ -114,6 +125,7 @@ class AuraDaemon:
         self._latest_jpeg: bytes | None = None
         self._jpeg_sequence = -1
         self._jpeg_size: tuple[int, int] | None = None
+        self._uv_relative = 0.0
         self._latest_frame: np.ndarray | None = None
         self._frame_sequence = 0
         self._started = time.monotonic()
@@ -252,6 +264,7 @@ class AuraDaemon:
                 self.uv_frames += 1
                 self._uv_rate.tick()
                 thermal = self.thermal.latest()
+                self._uv_relative = _relative_brightness(frame)
                 telemetry = self._hud_data(frame) if config.hud_mode != "off" else None
                 composed = self.compositor.compose(frame, thermal, config, telemetry)
                 with self._frame_lock:
@@ -281,15 +294,7 @@ class AuraDaemon:
         self._release_camera(camera)
 
     def _hud_data(self, frame: np.ndarray) -> HudTelemetry:
-        sample = frame[::16, ::16].astype(np.float32)
-        relative = float(
-            np.mean(
-                sample[..., 0] * 0.114
-                + sample[..., 1] * 0.587
-                + sample[..., 2] * 0.299
-            )
-            / 255.0
-        )
+        relative = _relative_brightness(frame)
         recording = self.recording_status()
         seconds = recording["seconds"] if recording["active"] else None
         return HudTelemetry(
@@ -653,6 +658,8 @@ class AuraDaemon:
 
     def status(self) -> dict[str, Any]:
         thermal = self.thermal.latest()
+        frame = self._latest_frame
+        shape = frame.shape if frame is not None else _DEFAULT_SHAPE
         try:
             load = os.getloadavg()[0]
         except OSError:
@@ -670,6 +677,7 @@ class AuraDaemon:
                 "frames": self.uv_frames,
                 "dropped": self.dropped_uv_frames,
                 "error": self.uv_error,
+                "relative": self._uv_relative,
             },
             "thermal": {
                 "connected": self.thermal.connected,
@@ -683,9 +691,15 @@ class AuraDaemon:
                 "vdd": thermal.vdd if thermal else None,
                 "errors": self.thermal.errors,
                 "error": self.thermal.error,
+                "markers": [
+                    {"label": m.label, "x": m.x, "y": m.y, "value": m.value}
+                    for m in self.compositor.markers(thermal, self.config_store.get(), shape)
+                ],
             },
             "output": {
                 "fps": self._output_rate.fps,
+                "width": shape[1],
+                "height": shape[0],
                 "directory": str(self.output_dir),
                 "last_snapshot": self.last_snapshot,
             },

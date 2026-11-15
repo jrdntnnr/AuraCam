@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 from functools import lru_cache
 
 import cv2
@@ -56,6 +57,26 @@ _FONT = {
     "X": (17, 17, 10, 4, 10, 17, 17),
     "Y": (17, 17, 10, 4, 4, 4, 4),
     "Z": (31, 1, 2, 4, 8, 16, 31),
+    "|": (4, 4, 4, 4, 4, 4, 4),
+    "\\": (16, 8, 4, 2, 1, 0, 0),
+    "[": (14, 8, 8, 8, 8, 8, 14),
+    "]": (14, 2, 2, 2, 2, 2, 14),
+    "(": (2, 4, 8, 8, 8, 4, 2),
+    ")": (8, 4, 2, 2, 2, 4, 8),
+    "<": (2, 4, 8, 16, 8, 4, 2),
+    ">": (8, 4, 2, 1, 2, 4, 8),
+    "_": (0, 0, 0, 0, 0, 0, 31),
+    "=": (0, 0, 31, 0, 31, 0, 0),
+    "#": (10, 10, 31, 10, 31, 10, 10),
+    "*": (0, 4, 21, 14, 21, 4, 0),
+    "'": (4, 4, 8, 0, 0, 0, 0),
+    '"': (10, 10, 0, 0, 0, 0, 0),
+    ";": (0, 4, 0, 0, 4, 4, 8),
+    "$": (4, 15, 20, 14, 5, 30, 4),
+    "@": (14, 17, 23, 21, 23, 16, 14),
+    "&": (12, 18, 20, 8, 21, 18, 13),
+    "^": (4, 10, 17, 0, 0, 0, 0),
+    "~": (0, 0, 8, 21, 2, 0, 0),
 }
 _COLORS = {
     "green": (72, 255, 132),
@@ -64,6 +85,40 @@ _COLORS = {
 }
 _CELL_WIDTH = 6
 _CELL_HEIGHT = 8
+_MARKER_SIZE = 13
+
+
+class CornerMarks(Enum):
+    HIDE = "hide"
+    SHOW = "show"
+
+
+def glyph_rows(char: str) -> tuple[int, ...]:
+    """Seven 5-bit rows of the HUD pixel font; bit 4 is the left column."""
+    return _FONT.get(char.upper(), _FONT["?"])
+
+
+def palette_rgb(name: str) -> int:
+    """HUD palette colour as 0xRRGGBB (the table is stored as BGR)."""
+    blue, green, red = _COLORS[name]
+    return (red << 16) | (green << 8) | blue
+
+
+@dataclass(frozen=True)
+class Marker:
+    """A probe/high/low point in output-frame pixels."""
+
+    label: str
+    x: int
+    y: int
+    value: float
+
+
+_MARKER_SHAPES = {
+    "P": cv2.MARKER_CROSS,
+    "H": cv2.MARKER_DIAMOND,
+    "L": cv2.MARKER_SQUARE,
+}
 
 
 @dataclass(frozen=True)
@@ -165,6 +220,45 @@ class HudRenderer:
             rec = f"REC {self._clock(data.recording_seconds)} F{data.recording_frames:05d}"
             self._right_text(frame, rec, footer_y, color, scale)
 
+    def markers(
+        self,
+        thermal: ThermalFrame | None,
+        config: AuraConfig,
+        geometry: OverlayGeometry,
+    ) -> list[Marker]:
+        """Probe, high and low points registered to the output frame."""
+        points = self._thermal_points(thermal, config)
+        if points is None:
+            return []
+        items = (
+            ("P", points.probe, points.probe_value),
+            ("H", points.high, points.high_value),
+            ("L", points.low, points.low_value),
+        )
+        result = []
+        for label, source, value in items:
+            x, y = self._map_point(source, points, geometry)
+            result.append(Marker(label, x, y, value))
+        return result
+
+    def overlay(
+        self,
+        frame: np.ndarray,
+        markers: list[Marker],
+        palette: str,
+        corners: CornerMarks,
+    ) -> np.ndarray:
+        """Draw markers already mapped into `frame` at scale 1.
+
+        Used by small panels that show telemetry beside the image instead of
+        burning it in, e.g. the Cardputer's 192x144 preview."""
+        color = _COLORS[palette]
+        if corners is CornerMarks.SHOW:
+            self._frame_marks(frame, color)
+        for marker in markers:
+            self._draw_marker(frame, marker, color, 1)
+        return frame
+
     def _markers(
         self,
         frame: np.ndarray,
@@ -174,17 +268,27 @@ class HudRenderer:
         scale: int,
     ) -> None:
         items = (
-            ("P", points.probe, points.probe_value, cv2.MARKER_CROSS),
-            ("H", points.high, points.high_value, cv2.MARKER_DIAMOND),
-            ("L", points.low, points.low_value, cv2.MARKER_SQUARE),
+            ("P", points.probe, points.probe_value),
+            ("H", points.high, points.high_value),
+            ("L", points.low, points.low_value),
         )
-        for label, source, value, marker in items:
-            point = self._map_point(source, points, geometry)
-            if not self._visible(point, frame):
-                continue
-            size = 13 * scale
-            cv2.drawMarker(frame, point, color, marker, size, max(1, scale))
-            self._label(frame, f"{label}{value:04.1f}", point, color, scale)
+        for label, source, value in items:
+            x, y = self._map_point(source, points, geometry)
+            self._draw_marker(frame, Marker(label, x, y, value), color, scale)
+
+    def _draw_marker(
+        self,
+        frame: np.ndarray,
+        marker: Marker,
+        color: tuple[int, int, int],
+        scale: int,
+    ) -> None:
+        point = (marker.x, marker.y)
+        if not self._visible(point, frame):
+            return
+        shape = _MARKER_SHAPES[marker.label]
+        cv2.drawMarker(frame, point, color, shape, _MARKER_SIZE * scale, max(1, scale))
+        self._label(frame, f"{marker.label}{marker.value:04.1f}", point, color, scale)
 
     @staticmethod
     def _thermal_points(

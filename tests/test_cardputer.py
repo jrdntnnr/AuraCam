@@ -1,9 +1,13 @@
+import base64
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from auracam.cardputer import CardputerBridge, TEXT_BYTES, wait_for_engine
+import cv2
+import numpy as np
+
+from auracam.cardputer import PREVIEW_SIZE, TEXT_BYTES, CardputerBridge, boot
 from auracam.config import ConfigStore
 from auracam.rgb import RgbCamera
 
@@ -18,11 +22,15 @@ class CardputerTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 store.update("image_source", "invalid")
 
-    def test_hud_key_cycles_on_capture_screen(self):
+    def test_hud_key_cycles_screen_overlay(self):
         client = MagicMock()
         client.request.return_value = {"config": {"hud_mode": "off"}, "recording": {"active": True}}
-        CardputerBridge(client).action("7")
-        client.request.assert_called_with("set", name="hud_mode", value="minimal")
+        bridge = CardputerBridge(client)
+        bridge.action("7")
+        self.assertEqual(bridge.hud, "off")
+        bridge.action("7")
+        self.assertEqual(bridge.hud, "minimal")
+        client.request.assert_called_with("status")
 
     def test_bottom_keys_change_context(self):
         client = MagicMock()
@@ -61,33 +69,81 @@ class CardputerTest(unittest.TestCase):
         packet = CardputerBridge(client).packet()
         self.assertIn(b"ENGINE OFFLINE", packet[:TEXT_BYTES])
 
-    def test_engine_wait_reports_exit(self):
+    def test_boot_reports_engine_exit(self):
         process = MagicMock()
         process.poll.return_value = 1
         client = MagicMock()
-        with patch("auracam.cardputer.emit"):
+        bridge = CardputerBridge(client)
+        with patch("auracam.cardputer.emit"), patch("auracam.cardputer._read_keys", return_value=""):
             with self.assertRaisesRegex(RuntimeError, "exited"):
-                wait_for_engine(process, client, CardputerBridge(client))
+                boot(process, client, bridge)
+        self.assertEqual(bridge.log.state("ENGINE"), "FAIL")
 
-    def test_engine_wait_returns_once_reachable(self):
+    def test_boot_steps_until_first_frame(self):
         process = MagicMock()
         process.poll.return_value = None
         client = MagicMock()
-        client.request.side_effect = [OSError(), {"ok": True}]
-        with patch("auracam.cardputer.emit") as emitted, patch("auracam.cardputer.time.sleep"):
-            wait_for_engine(process, client, CardputerBridge(client))
-        self.assertEqual(emitted.call_count, 1)
+        client.request.side_effect = [OSError(), preview(fps=0.0, jpeg=""), preview(fps=30.0, jpeg=tiny_jpeg())]
+        bridge = CardputerBridge(client)
+        with patch("auracam.cardputer.emit") as emitted, \
+                patch("auracam.cardputer._read_keys", return_value=""), \
+                patch("auracam.cardputer.BOOT_DONE_HOLD_S", 0.0):
+            self.assertTrue(boot(process, client, bridge))
+        first = emitted.call_args_list[0].args[0][:TEXT_BYTES]
+        last = emitted.call_args_list[-1].args[0][:TEXT_BYTES]
+        self.assertTrue(first.startswith(b"BOOT\t"))
+        self.assertIn(b"ENGINE|RUN", first)
+        self.assertIn(b"ENGINE|OK", last)
+        self.assertIn(b"CAMERA|30FPS", last)
+        self.assertIn(b"THERMAL|16HZ", last)
+        self.assertIn(b"FRAME|OK", last)
+
+    def test_boot_stops_when_frontend_quits(self):
+        client = MagicMock()
+        with patch("auracam.cardputer.emit"), patch("auracam.cardputer._read_keys", return_value=None):
+            self.assertFalse(boot(MagicMock(), client, CardputerBridge(client)))
+
+    def test_live_packet_fields(self):
+        client = MagicMock()
+        client.request.return_value = preview(fps=30.0, jpeg=tiny_jpeg())
+        packet = CardputerBridge(client).packet()
+        kind, color, header, left, right, actions, _ = packet[:TEXT_BYTES].rstrip(b"\0").decode().split("\t")
+        self.assertEqual((kind, color, header), ("LIVE", "84FF48", ""))
+        self.assertIn("RGB 30", left.split("\n"))
+        self.assertEqual(right.split("\n"), ["P 24.0C", "H 30.0C", "L 20.0C"])
+        self.assertEqual(actions, "MENU|SNAP|RECORD|HUD|MODE")
+        self.assertEqual(len(packet), TEXT_BYTES + PREVIEW_SIZE[0] * PREVIEW_SIZE[1] * 4)
 
     def test_packet_before_first_thermal_frame(self):
         client = MagicMock()
-        client.request.return_value = {
-            "jpeg": "",
-            "status": {
-                "config": {"image_source": "rgb", "mode": "clean", "threshold": 26.0},
-                "thermal": {"connected": True, "fps": 0.0, "min": None, "max": None, "error": None},
-                "uv": {"fps": 0.0, "error": None},
-                "recording": {"active": False, "seconds": 0.0},
-            },
-        }
+        response = preview(fps=0.0, jpeg="")
+        response["status"]["thermal"].update({"min": None, "max": None, "markers": []})
+        client.request.return_value = response
         packet = CardputerBridge(client).packet()
-        self.assertIn(b"THERMAL WARMUP", packet[:TEXT_BYTES])
+        self.assertIn(b"WARMUP", packet[:TEXT_BYTES])
+
+
+def tiny_jpeg():
+    ok, encoded = cv2.imencode(".jpg", np.zeros((144, 192, 3), np.uint8))
+    return base64.b64encode(encoded.tobytes()).decode()
+
+
+def preview(fps, jpeg):
+    return {
+        "jpeg": jpeg,
+        "status": {
+            "config": {"image_source": "rgb", "mode": "clean", "threshold": 26.0, "hud_palette": "green"},
+            "uv": {"connected": True, "fps": fps, "error": None, "relative": 0.4},
+            "thermal": {
+                "connected": True, "fps": 15.7, "refresh_hz": 16.0, "min": 20.0, "max": 30.0,
+                "ambient": 22.0, "errors": 0, "error": None,
+                "markers": [
+                    {"label": "P", "x": 320, "y": 240, "value": 24.0},
+                    {"label": "H", "x": 100, "y": 50, "value": 30.0},
+                    {"label": "L", "x": 600, "y": 400, "value": 20.0},
+                ],
+            },
+            "output": {"fps": 15.0, "width": 640, "height": 480},
+            "recording": {"active": False, "seconds": 0.0},
+        },
+    }

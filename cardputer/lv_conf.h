@@ -9,8 +9,8 @@
 #define LV_LINUX_FBDEV_MMAP 1
 #define LV_FONT_MONTSERRAT_12 0
 #define LV_FONT_MONTSERRAT_14 0
-#define LV_FONT_CUSTOM_DECLARE LV_FONT_DECLARE(share_tech_mono_12) LV_FONT_DECLARE(share_tech_mono_20)
-#define LV_FONT_DEFAULT &share_tech_mono_12
+#define LV_FONT_CUSTOM_DECLARE LV_FONT_DECLARE(aura_pixel_7)
+#define LV_FONT_DEFAULT &aura_pixel_7
 #define LV_USE_LOG 0
 #define LV_BUILD_EXAMPLES 0
 #define LV_BUILD_DEMOS 0

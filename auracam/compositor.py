@@ -10,7 +10,7 @@ import numpy as np
 
 from .config import AuraConfig
 from .frames import HudTelemetry, OverlayGeometry, ThermalFrame
-from .hud import HudRenderer
+from .hud import HudRenderer, Marker
 
 _CV_PALETTES = {
     "inferno": cv2.COLORMAP_INFERNO,
@@ -125,6 +125,16 @@ class AuraCompositor:
         if telemetry is None:
             return result
         return self._hud.render(result, thermal, config, telemetry, geometry)
+
+    def markers(
+        self,
+        thermal: ThermalFrame | None,
+        config: AuraConfig,
+        shape: tuple[int, ...],
+    ) -> list[Marker]:
+        """Probe/high/low points in pixels of an output frame of `shape`."""
+        geometry = self._geometry(shape, config, time.monotonic())
+        return self._hud.markers(thermal, config, geometry)
 
     def render_thermal(
         self,
