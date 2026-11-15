@@ -49,6 +49,7 @@ Install it after building:
 
 ```sh
 chmod +x cardputer/launch.sh
+sudo install -m 644 cardputer/auracam.png /usr/share/APPLaunch/share/images/
 sudo install -m 644 cardputer/aura-cardputer.desktop /usr/share/APPLaunch/applications/
 systemctl --user restart APPLaunch.service
 ```
