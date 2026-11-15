@@ -20,10 +20,12 @@ from auracam.frames import HudTelemetry
 class FakeStdin:
     def __init__(self):
         self.data = bytearray()
+        self.writes = []
         self.closed = False
 
     def write(self, data):
         self.data.extend(data)
+        self.writes.append(bytes(data))
         return len(data)
 
     def close(self):
@@ -76,6 +78,8 @@ def capture_daemon(output_dir):
     daemon._jpeg_lock = threading.Lock()
     daemon._jpeg_size = None
     daemon._save_thread = None
+    daemon._spare = None
+    daemon._spare_retry_at = 0.0
     daemon._record_started = 0.0
     daemon._record_path = None
     daemon._record_writer = None
@@ -201,6 +205,55 @@ class CaptureFileTest(unittest.TestCase):
             release.set()
             daemon._save_thread.join(5)
             self.assertFalse(daemon.recording_status()["saving"])
+
+    def test_recording_starts_on_warm_encoder(self):
+        with tempfile.TemporaryDirectory() as directory:
+            daemon = capture_daemon(directory)
+            daemon._latest_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+            daemon._output_rate = mock.Mock(fps=15.0)
+            daemon.config_store = mock.Mock()
+            daemon.config_store.get.return_value = AuraConfig()
+            spare = FakeWriter()
+            spare_path = daemon._pending_dir() / "spare_1.mp4"
+            daemon._spare = (spare, spare_path, (640, 480), 15.0)
+
+            with mock.patch("auracam.daemon.subprocess.Popen") as popen:
+                daemon._start_recording()
+
+            popen.assert_not_called()
+            self.assertIs(daemon._record_writer, spare)
+            self.assertEqual(daemon._record_temp_path, str(spare_path))
+            self.assertIsNone(daemon._spare)
+            self.assertEqual(daemon._record_nominal_fps, 15.0)
+            daemon._record_queue.put(_RECORD_END)
+            daemon._record_thread.join(2)
+
+    def test_cold_encoder_drops_backlog_instead_of_jumping(self):
+        with tempfile.TemporaryDirectory() as directory:
+            daemon = capture_daemon(directory)
+            writer = FakeWriter()
+            writer.stdin = SlowStdin()
+            frames = queue.Queue(maxsize=24)
+            daemon._record_writer = writer
+            daemon._record_accepting = True
+            daemon._record_started = time.monotonic() - 10
+            daemon._record_dropped = 7
+            frames.put(b"first")
+            worker = threading.Thread(target=daemon._record_loop, args=(writer, frames))
+            with mock.patch("auracam.daemon._ENCODER_COLD_S", 0.0):
+                worker.start()
+                writer.stdin.started.wait(2)
+                for index in range(5):
+                    frames.put(b"stale%d" % index)
+                writer.stdin.release.set()
+                time.sleep(0.2)
+                frames.put(b"fresh")
+                frames.put(_RECORD_END)
+                worker.join(2)
+
+            self.assertEqual(writer.stdin.writes, [b"first", b"fresh"])
+            self.assertEqual(daemon._record_dropped, 0)
+            self.assertLess(time.monotonic() - daemon._record_started, 1.0)
 
     def test_recording_is_published_after_writer_release(self):
         with tempfile.TemporaryDirectory() as directory:

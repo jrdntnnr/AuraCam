@@ -38,6 +38,11 @@ from supercamera.validate import decode_jpeg
 _DEMO_CAMERA = object()
 _RECORD_END = object()
 _RECORD_QUEUE_SIZE = 24
+# A first encoder write slower than this means ffmpeg was still starting
+# (several seconds on a loaded Cardputer); the frames queued meanwhile are
+# stale and would show as a time jump in the clip.
+_ENCODER_COLD_S = 0.5
+_SPARE_RETRY_S = 10.0
 _CONFIG_COMMANDS = frozenset(
     {
         ControlCommand.CONFIG,
@@ -151,6 +156,8 @@ class AuraDaemon:
         self._uv_relative = 0.0
         self._overlay = OverlayTransform()
         self._save_thread: threading.Thread | None = None
+        self._spare: tuple[subprocess.Popen, Path, tuple[int, int], float] | None = None
+        self._spare_retry_at = 0.0
         self._latest_frame: np.ndarray | None = None
         self._latest_clean: np.ndarray | None = None
         self._frame_sequence = 0
@@ -199,6 +206,10 @@ class AuraDaemon:
         if self._save_thread is not None:
             self._save_thread.join(timeout=60)
         self._stop_recording()
+        spare = self._spare
+        self._spare = None
+        if spare is not None:
+            self._discard_encoder(spare[0], spare[1])
         try:
             self.socket_path.unlink()
         except FileNotFoundError:
@@ -328,6 +339,7 @@ class AuraDaemon:
                     self._latest_jpeg = None
                     self._jpeg_sequence = -1
                 self._write_recording(composed)
+                self._ensure_spare((composed.shape[1], composed.shape[0]))
                 self._output_rate.tick()
                 if (
                     camera is not _DEMO_CAMERA
@@ -390,7 +402,108 @@ class AuraDaemon:
             except queue.Full:
                 self._record_dropped += 1
 
+    def _encoder_command(self, path: Path, size: tuple[int, int], fps: float) -> list[str]:
+        width, height = size
+        return [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "rawvideo",
+            "-pixel_format",
+            "bgr24",
+            "-video_size",
+            f"{width}x{height}",
+            "-framerate",
+            f"{fps:.6f}",
+            "-i",
+            "pipe:0",
+            "-an",
+            "-c:v",
+            "h264_v4l2m2m",
+            "-b:v",
+            "4000000",
+            "-pix_fmt",
+            "yuv420p",
+            "-fps_mode",
+            "passthrough",
+            str(path),
+        ]
+
+    def _spawn_encoder(self, path: Path, size: tuple[int, int], fps: float) -> subprocess.Popen:
+        return subprocess.Popen(
+            self._encoder_command(path, size, fps),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+    def _take_encoder(
+        self, size: tuple[int, int], fps: float
+    ) -> tuple[subprocess.Popen, Path, float]:
+        """Hand out the pre-started encoder, or start one cold.
+
+        The spare was started with host_fps_cap as its nominal rate; the
+        timing pass at stop corrects the clip to the real rate either way, as
+        long as it knows the nominal rate the stream was encoded with."""
+        spare = self._spare
+        self._spare = None
+        if spare is not None:
+            writer, path, spare_size, spare_fps = spare
+            if writer.poll() is None and spare_size == size:
+                return writer, path, spare_fps
+            self._discard_encoder(writer, path)
+        path = self._pending_dir() / f"rec_{time.monotonic_ns()}.mp4"
+        return self._spawn_encoder(path, size, fps), path, fps
+
+    def _ensure_spare(self, size: tuple[int, int]) -> None:
+        """Keep one encoder started and idle so recording begins instantly.
+
+        ffmpeg needs ~1 s idle and ~6 s on a busy Cardputer before it reads
+        its first frame; an idle one costs ~45 MB and answers in ~5 ms."""
+        if self._spare is not None or self._record_writer is not None or self._saving():
+            return
+        if time.monotonic() < self._spare_retry_at:
+            return
+        self._spare_retry_at = time.monotonic() + _SPARE_RETRY_S
+        path = self._pending_dir() / f"spare_{time.monotonic_ns()}.mp4"
+        try:
+            fps = float(self.config_store.get().host_fps_cap)
+            self._spare = (self._spawn_encoder(path, size, fps), path, size, fps)
+        except OSError:
+            self._spare = None
+
+    @staticmethod
+    def _discard_encoder(writer: subprocess.Popen, path: Path) -> None:
+        try:
+            writer.kill()
+            writer.wait(timeout=5)
+        except Exception:
+            pass
+        path.unlink(missing_ok=True)
+
+    def _drop_backlog(self, frame_queue: queue.Queue) -> bool:
+        """Discard frames queued while the encoder started; restart the clock.
+
+        Returns False when the end marker was among them."""
+        ended = False
+        while True:
+            try:
+                item = frame_queue.get_nowait()
+            except queue.Empty:
+                break
+            frame_queue.task_done()
+            if item is _RECORD_END:
+                ended = True
+        with self._record_lock:
+            self._record_started = time.monotonic()
+            self._record_dropped = 0
+        return not ended
+
     def _record_loop(self, writer, frame_queue: queue.Queue) -> None:
+        first = True
         try:
             while True:
                 item = frame_queue.get()
@@ -405,9 +518,15 @@ class AuraDaemon:
                         )
                     if writer.stdin is None:
                         raise RuntimeError("video encoder input is unavailable")
+                    started = time.monotonic()
                     writer.stdin.write(item)
                     with self._record_lock:
                         self._record_frames += 1
+                    cold = first and time.monotonic() - started > _ENCODER_COLD_S
+                    first = False
+                    if cold and not self._drop_backlog(frame_queue):
+                        frame_queue.task_done()
+                        break
                 except (BrokenPipeError, OSError, RuntimeError) as exc:
                     with self._record_lock:
                         self._record_error = str(exc)
@@ -522,42 +641,10 @@ class AuraDaemon:
             height, width = frame.shape[:2]
             stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
             path = self.output_dir / f"aura_{stamp}.mp4"
-            pending = self._pending_dir() / path.name
             nominal_fps = max(
                 1.0, self._output_rate.fps or self.config_store.get().host_fps_cap
             )
-            writer = subprocess.Popen(
-                [
-                    "ffmpeg",
-                    "-hide_banner",
-                    "-loglevel",
-                    "error",
-                    "-y",
-                    "-f",
-                    "rawvideo",
-                    "-pixel_format",
-                    "bgr24",
-                    "-video_size",
-                    f"{width}x{height}",
-                    "-framerate",
-                    f"{nominal_fps:.6f}",
-                    "-i",
-                    "pipe:0",
-                    "-an",
-                    "-c:v",
-                    "h264_v4l2m2m",
-                    "-b:v",
-                    "4000000",
-                    "-pix_fmt",
-                    "yuv420p",
-                    "-fps_mode",
-                    "passthrough",
-                    str(pending),
-                ],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
+            writer, pending, nominal_fps = self._take_encoder((width, height), nominal_fps)
             if writer.stdin is None:
                 writer.kill()
                 pending.unlink(missing_ok=True)

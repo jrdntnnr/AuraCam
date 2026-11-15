@@ -1,8 +1,8 @@
 # AuraCam on Cardputer Zero
 
 The device frontend follows M5's LVGL 9.5 application template: 320x170
-framebuffer, keyboard input, five bottom actions on keys 4-8, and hold Esc to
-exit to APPLaunch. The Python capture process exits with the app and finalizes
+framebuffer, keyboard input, five bottom actions on keys 4-8, and hold Esc for
+3 s to exit to APPLaunch. The Python capture process exits with the app and finalizes
 recording on normal exit.
 
 | Key | Capture screen | Menu |

@@ -22,6 +22,7 @@
  */
 #include "lvgl.h"
 #include "src/drivers/display/fb/lv_linux_fbdev.h"
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <csignal>
@@ -59,9 +60,13 @@ constexpr int kActionCount = 5;
 constexpr int kActionWidth = kScreenWidth / kActionCount;
 constexpr int kLogY = kPreviewY + 2;
 constexpr size_t kLeaderColumn = 16;
+constexpr int kToastWidth = 120;
+constexpr int kToastHeight = 22;
+constexpr int kToastBarHeight = 2;
+constexpr int kToastPad = 4;
 
 // Timing.
-constexpr int kHoldMs = 700;
+constexpr uint32_t kQuitHoldMs = 3000;
 constexpr uint32_t kSpinnerMs = 110;
 constexpr uint32_t kCursorMs = 500;
 constexpr useconds_t kLoopSleepUs = 5000;
@@ -105,6 +110,8 @@ struct Ui {
     lv_style_t text;
     lv_style_t dim;
     lv_style_t rule;
+    lv_style_t toast;
+    lv_style_t fill;
     uint32_t color;
     lv_obj_t* title;
     lv_obj_t* status;
@@ -114,6 +121,8 @@ struct Ui {
     lv_obj_t* left;
     lv_obj_t* right;
     std::array<lv_obj_t*, kActionCount> actions;
+    lv_obj_t* toast_box;
+    lv_obj_t* toast_bar;
     std::vector<Step> steps;
     Phase phase;
     uint32_t tick;
@@ -216,15 +225,17 @@ void apply_color(Ui& ui, uint32_t color) {
     lv_style_set_text_color(&ui.text, text);
     lv_style_set_text_color(&ui.dim, dim);
     lv_style_set_bg_color(&ui.rule, dim);
+    lv_style_set_border_color(&ui.toast, text);
+    lv_style_set_bg_color(&ui.fill, text);
     lv_obj_report_style_change(nullptr);
 }
 
-Ui build_ui() {
+// Fills `ui` in place: LVGL objects keep pointers to its styles.
+void build_ui(Ui& ui) {
     auto* screen = lv_screen_active();
     lv_obj_set_style_bg_color(screen, lv_color_hex(kBackground), 0);
     lv_obj_remove_flag(screen, LV_OBJ_FLAG_SCROLLABLE);
 
-    Ui ui{};
     ui.phase = Phase::Boot;
     ui.color = 0;
     lv_style_init(&ui.text);
@@ -233,6 +244,14 @@ Ui build_ui() {
     lv_style_set_text_font(&ui.text, &aura_pixel_7);
     lv_style_set_text_font(&ui.dim, &aura_pixel_7);
     lv_style_set_bg_opa(&ui.rule, LV_OPA_COVER);
+    lv_style_init(&ui.toast);
+    lv_style_set_bg_color(&ui.toast, lv_color_hex(kBackground));
+    lv_style_set_bg_opa(&ui.toast, LV_OPA_COVER);
+    lv_style_set_border_width(&ui.toast, 1);
+    lv_style_set_radius(&ui.toast, 0);
+    lv_style_set_pad_all(&ui.toast, 0);
+    lv_style_init(&ui.fill);
+    lv_style_set_bg_opa(&ui.fill, LV_OPA_COVER);
     apply_color(ui, kDefaultColor);
 
     // Terminal header shared by both phases.
@@ -256,7 +275,34 @@ Ui build_ui() {
     for (int i = 0; i < kActionCount; ++i) {
         ui.actions[i] = label(screen, &ui.text, i * kActionWidth, kFooterY, kActionWidth, LV_TEXT_ALIGN_CENTER);
     }
-    return ui;
+
+    // Quit toast: created last so it sits above everything; the bar fills
+    // while Esc is held.
+    ui.toast_box = lv_obj_create(screen);
+    lv_obj_remove_style_all(ui.toast_box);
+    lv_obj_add_style(ui.toast_box, &ui.toast, 0);
+    lv_obj_set_size(ui.toast_box, kToastWidth, kToastHeight);
+    lv_obj_center(ui.toast_box);
+    lv_obj_remove_flag(ui.toast_box, LV_OBJ_FLAG_SCROLLABLE);
+    auto* message = label(ui.toast_box, &ui.text, 0, kToastPad, kToastWidth - 2, LV_TEXT_ALIGN_CENTER);
+    lv_label_set_text(message, "HOLD ESC TO QUIT");
+    ui.toast_bar = lv_obj_create(ui.toast_box);
+    lv_obj_remove_style_all(ui.toast_bar);
+    lv_obj_add_style(ui.toast_bar, &ui.fill, 0);
+    lv_obj_set_pos(ui.toast_bar, kToastPad, kToastHeight - kToastPad - kToastBarHeight - 1);
+    lv_obj_set_size(ui.toast_bar, 0, kToastBarHeight);
+    show(ui.toast_box, false);
+}
+
+// held_ms == 0 hides the toast; otherwise the bar shows progress to quit.
+void show_toast(Ui& ui, uint32_t held_ms) {
+    show(ui.toast_box, held_ms > 0);
+    if (held_ms == 0) {
+        return;
+    }
+    const int track = kToastWidth - 2 * kToastPad - 2;
+    const int width = static_cast<int>(track * std::min<uint32_t>(held_ms, kQuitHoldMs) / kQuitHoldMs);
+    lv_obj_set_width(ui.toast_bar, width);
 }
 
 void show_phase(Ui& ui, Phase phase) {
@@ -390,7 +436,8 @@ int main() {
     lv_tick_set_cb(ticks);
     auto* display = lv_linux_fbdev_create();
     lv_linux_fbdev_set_file(display, "/dev/fb_lcd");
-    Ui ui = build_ui();
+    Ui ui{};
+    build_ui(ui);
     show_phase(ui, Phase::Boot);
     render_boot(ui);
     lv_timer_create(spin, kSpinnerMs, &ui);
@@ -417,10 +464,11 @@ int main() {
                 continue;
             }
             if (event.code == KEY_ESC) {
-                if (event.value == 1) {
+                if (event.value == kKeyPress) {
                     escape_at = ticks();
                 } else if (event.value == 0) {
                     escape_at = 0;
+                    show_toast(ui, 0);
                 }
             }
             const char command = command_for(event);
@@ -428,8 +476,12 @@ int main() {
                 running = 0;
             }
         }
-        if (escape_at && ticks() - escape_at >= kHoldMs) {
-            running = 0;
+        if (escape_at) {
+            const uint32_t held = std::max<uint32_t>(1, ticks() - escape_at);
+            show_toast(ui, held);
+            if (held >= kQuitHoldMs) {
+                running = 0;
+            }
         }
 
         // Packets: accumulate until a whole one has arrived.
