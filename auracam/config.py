@@ -21,6 +21,7 @@ _ALIASES = {
 
 @dataclass(frozen=True)
 class AuraConfig:
+    image_source: str = "uv"
     mode: str = "clean"
     representation: str = "temperature"
     palette: str = "aura"
@@ -106,6 +107,7 @@ _RANGES: dict[str, tuple[float, float]] = {
 }
 
 _CHOICES = {
+    "image_source": ("uv", "rgb"),
     "mode": MODES,
     "representation": REPRESENTATIONS,
     "palette": PALETTES,

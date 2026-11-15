@@ -116,11 +116,11 @@ class HudRenderer:
                 f"L{points.low_value:04.1f}C"
             )
         self._text(frame, readings, (12, 12), color, scale)
-        rates = f"UV{data.uv_fps:04.1f} IR{data.thermal_fps:04.1f} FPS"
+        rates = f"{data.source_label}{data.uv_fps:04.1f} IR{data.thermal_fps:04.1f} FPS"
         self._right_text(frame, rates, 12, color, scale)
         self._text(
             frame,
-            f"UV REL {round(data.uv_relative * 100):03d}%",
+            f"{data.source_label} REL {round(data.uv_relative * 100):03d}%",
             (12, frame.shape[0] - 12 - 7 * scale),
             color,
             scale,
@@ -140,10 +140,10 @@ class HudRenderer:
     ) -> None:
         y = 14
         for text in (
-            f"UV  {data.uv_fps:04.1f} FPS",
+            f"{data.source_label}  {data.uv_fps:04.1f} FPS",
             f"IR  {data.thermal_fps:04.1f} FPS",
             f"OUT {data.output_fps:04.1f} FPS",
-            f"UV REL {round(data.uv_relative * 100):03d}%",
+            f"{data.source_label} REL {round(data.uv_relative * 100):03d}%",
         ):
             self._text(frame, text, (18, y), color, scale)
             y += _CELL_HEIGHT * scale + 3

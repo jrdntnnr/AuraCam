@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=AuraCam
+Comment=RGB or UV camera with MLX90640 thermal fusion
+Exec=/home/zero/auracam/cardputer/launch.sh
+Icon=share/images/camera1.png
+Terminal=false
+Categories=Utility;
+StartupNotify=false

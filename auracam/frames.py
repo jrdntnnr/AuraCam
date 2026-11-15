@@ -34,6 +34,7 @@ class HudTelemetry:
     recording_seconds: float | None
     recording_frames: int
     i2c_errors: int
+    source_label: str = "UV"
 
 
 @dataclass(frozen=True)

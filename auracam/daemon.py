@@ -29,6 +29,7 @@ from .control import (
     SwitchAction,
 )
 from .frames import HudTelemetry
+from .rgb import RgbCamera
 from .thermal import MLX90640, DemoMLX90640, ThermalWorker
 from supercamera.validate import decode_jpeg
 
@@ -180,7 +181,8 @@ class AuraDaemon:
             return _DEMO_CAMERA
         from protocol_camera import Camera
 
-        camera = Camera()
+        self._active_source = self.config_store.get().image_source
+        camera = RgbCamera() if self._active_source == "rgb" else Camera()
         with self._camera_lock:
             self._camera = camera
         self._last_button_count = camera.button_press_count
@@ -218,10 +220,16 @@ class AuraDaemon:
                 self._stop.wait(0.05)
                 continue
             config = self.config_store.get()
+            if camera is not _DEMO_CAMERA and config.image_source != self._active_source:
+                self._release_camera(camera)
+                camera = None
+                continue
             started = time.monotonic()
             try:
                 if camera is _DEMO_CAMERA:
                     frame = self._demo_frame()
+                elif isinstance(camera, RgbCamera):
+                    frame = camera.read_frame()
                 else:
                     jpeg = camera.read_jpeg()
                     if not jpeg:
@@ -275,6 +283,7 @@ class AuraDaemon:
         recording = self.recording_status()
         seconds = recording["seconds"] if recording["active"] else None
         return HudTelemetry(
+            source_label=self.config_store.get().image_source.upper(),
             uv_fps=self._uv_rate.fps,
             thermal_fps=self.thermal.fps,
             output_fps=self._output_rate.fps,
