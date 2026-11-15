@@ -72,6 +72,19 @@ constexpr uint32_t kDefaultColor = 0xffc200;
 constexpr lv_opa_t kDimMix = LV_OPA_40;
 
 constexpr char kSpinner[] = {'|', '/', '-', '\\'};
+
+// Arrow keys go to the bridge as U/D/L/R (calibration). The Cardputer
+// prints its arrows on F (up), Z (left), X (down) and C (right).
+struct Arrow {
+    int code;
+    char command;
+};
+constexpr Arrow kArrows[] = {
+    {KEY_F, 'U'}, {KEY_Z, 'L'}, {KEY_X, 'D'}, {KEY_C, 'R'},
+    {KEY_UP, 'U'}, {KEY_LEFT, 'L'}, {KEY_DOWN, 'D'}, {KEY_RIGHT, 'R'},
+};
+constexpr int kKeyPress = 1;
+constexpr int kKeyRepeat = 2;
 constexpr char kFieldSeparator = '\t';
 constexpr char kStateSeparator = '|';
 constexpr char kStateRunning[] = "RUN";
@@ -114,6 +127,22 @@ uint32_t ticks() {
 
 void stop(int) {
     running = 0;
+}
+
+// Command for a key event, or 0. Arrows also repeat while held.
+char command_for(const input_event& event) {
+    if (event.value == kKeyPress && event.code >= KEY_4 && event.code <= KEY_8) {
+        return static_cast<char>('4' + event.code - KEY_4);
+    }
+    if (event.value != kKeyPress && event.value != kKeyRepeat) {
+        return 0;
+    }
+    for (const auto& arrow : kArrows) {
+        if (arrow.code == event.code) {
+            return arrow.command;
+        }
+    }
+    return 0;
 }
 
 int keyboard() {
@@ -394,11 +423,9 @@ int main() {
                     escape_at = 0;
                 }
             }
-            if (event.value == 1 && event.code >= KEY_4 && event.code <= KEY_8) {
-                const char command = '4' + event.code - KEY_4;
-                if (write(commands[1], &command, 1) != 1) {
-                    running = 0;
-                }
+            const char command = command_for(event);
+            if (command && write(commands[1], &command, 1) != 1) {
+                running = 0;
             }
         }
         if (escape_at && ticks() - escape_at >= kHoldMs) {

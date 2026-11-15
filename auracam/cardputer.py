@@ -49,8 +49,22 @@ THERMAL_REFRESH_HZ = 16.0
 COMPOSITE_FPS = 15
 # The Pi build's yellow-orange HUD.
 PALETTE = "amber"
+# Calibration: overlay geometry plus the grid shown while aligning.
+CALIBRATION_FIELDS = ("offset_x", "offset_y", "scale_x", "scale_y", "grid")
+ARROWS = {"U": (0, -1), "D": (0, 1), "L": (-1, 0), "R": (1, 0)}
+# Index by coarse flag: (fine, coarse). Moves are output-frame pixels.
+MOVE_STEPS = (2, 10)
+ZOOM_STEPS = (0.01, 0.05)
+THRESHOLD_STEPS = {"5": -1.0, "6": -0.5, "7": 0.5, "8": 1.0}
 EXT_POWER = Path("/sys/class/leds/ext_5v_out/brightness")
 I2C_CLOCK = Path("/proc/device-tree/soc/i2c@7e804000/clock-frequency")
+
+
+class Screen(Enum):
+    CAPTURE = "capture"
+    MENU = "menu"
+    CALIBRATE = "calibrate"
+    THRESHOLD = "threshold"
 
 
 class Kind(str, Enum):
@@ -103,7 +117,9 @@ class BootLog:
 class CardputerBridge:
     def __init__(self, client):
         self.client = client
-        self.menu = False
+        self.screen = Screen.CAPTURE
+        self.coarse = False
+        self._calibration: dict = {}
         self.palette = PALETTE
         self.message = ""
         self.message_until = 0.0
@@ -111,36 +127,84 @@ class CardputerBridge:
         self.log = BootLog()
         self._overlay = HudRenderer()
 
-    # Keys 4-8 under the screen; key 4 swaps the capture and menu rows.
+    # Keys 4-8 under the screen act on the current screen; U/D/L/R are the
+    # arrow keys (F/Z/X/C on the Cardputer), used only while calibrating.
     def action(self, key):
-        status = self.client.request("status")
-        config = status["config"]
+        config = self.client.request("status")["config"]
+        handlers = {
+            Screen.CAPTURE: self._capture_key,
+            Screen.MENU: self._menu_key,
+            Screen.CALIBRATE: self._calibrate_key,
+            Screen.THRESHOLD: self._threshold_key,
+        }
+        handlers[self.screen](key, config)
+
+    def _capture_key(self, key, config):
         if key == "4":
-            self.menu = not self.menu
-            return
-        if self.menu:
-            if key == "5":
-                look = CAMERA_LOOKS[(CAMERA_LOOKS.index(config["camera_look"]) + 1) % len(CAMERA_LOOKS)]
-                self.client.request("set", name="camera_look", value=look)
-            elif key == "6":
-                fov = CAMERA_FOVS[(CAMERA_FOVS.index(config["camera_fov"]) + 1) % len(CAMERA_FOVS)]
-                self.client.request("set", name="camera_fov", value=fov)
-            elif key == "7":
-                self.client.request("adjust", name="threshold", delta=-0.5)
-            elif key == "8":
-                self.client.request("adjust", name="threshold", delta=0.5)
-            return
-        if key == "5":
+            self.screen = Screen.MENU
+        elif key == "5":
             result = self.client.request("snapshot")
             self.say("SAVED " + Path(result["path"]).stem)
         elif key == "6":
             self.client.request("record", action="toggle")
         elif key == "7":
-            mode = HUD_MODES[(HUD_MODES.index(config["hud_mode"]) + 1) % len(HUD_MODES)]
-            self.client.request("set", name="hud_mode", value=mode)
+            self._cycle(config, "hud_mode", HUD_MODES)
         elif key == "8":
             mode = MODES[(MODES.index(config["mode"]) + 1) % len(MODES)]
             self.client.request("mode", mode=mode)
+
+    def _menu_key(self, key, config):
+        if key == "4":
+            self.screen = Screen.CAPTURE
+        elif key == "5":
+            self._cycle(config, "camera_look", CAMERA_LOOKS)
+        elif key == "6":
+            self._cycle(config, "camera_fov", CAMERA_FOVS)
+        elif key == "7":
+            # Remember the calibration to restore on cancel; the grid shows
+            # the whole thermal frame while aligning it.
+            self._calibration = {name: config[name] for name in CALIBRATION_FIELDS}
+            self.coarse = False
+            self._set("grid", True)
+            self.screen = Screen.CALIBRATE
+        elif key == "8":
+            self.screen = Screen.THRESHOLD
+
+    def _calibrate_key(self, key, config):
+        if key in ARROWS:
+            dx, dy = ARROWS[key]
+            step = MOVE_STEPS[self.coarse]
+            if dx:
+                self._set("offset_x", config["offset_x"] + dx * step)
+            if dy:
+                self._set("offset_y", config["offset_y"] + dy * step)
+        elif key in ("5", "6"):
+            # Zoom keeps the aspect: both axes scale by the same factor.
+            factor = 1.0 + ZOOM_STEPS[self.coarse] * (1 if key == "6" else -1)
+            self._set("scale_x", round(config["scale_x"] * factor, 4))
+            self._set("scale_y", round(config["scale_y"] * factor, 4))
+        elif key == "7":
+            self.coarse = not self.coarse
+        elif key == "4":
+            self._set("grid", self._calibration["grid"])
+            self.say("CALIBRATION SAVED")
+            self.screen = Screen.CAPTURE
+        elif key == "8":
+            for name, value in self._calibration.items():
+                self._set(name, value)
+            self.screen = Screen.CAPTURE
+
+    def _threshold_key(self, key, config):
+        if key == "4":
+            self.screen = Screen.CAPTURE
+        elif key in THRESHOLD_STEPS:
+            self.client.request("adjust", name="threshold", delta=THRESHOLD_STEPS[key])
+
+    def _cycle(self, config, name, choices):
+        self._set(name, choices[(choices.index(config[name]) + 1) % len(choices)])
+
+    def _set(self, name, value):
+        self.client.request("set", name=name, value=value)
 
     def say(self, message: str, hold: float = MESSAGE_HOLD_S) -> None:
         self.message = message
@@ -195,6 +259,10 @@ class CardputerBridge:
     def _header(self, status) -> str:
         if time.monotonic() < self.message_until:
             return _clean(self.message)[:HEADER_CHARS]
+        if self.screen is Screen.CALIBRATE:
+            return "CALIBRATE"
+        if self.screen is Screen.THRESHOLD:
+            return "THRESHOLD"
         recording = status["recording"]
         if recording.get("saving"):
             return "SAVING"
@@ -209,6 +277,12 @@ class CardputerBridge:
     # Left column: stream rates and capture state, as in the tactical HUD.
     def _left(self, status) -> list[str]:
         config = status["config"]
+        if self.screen is Screen.CALIBRATE:
+            return [
+                f"X {config['offset_x']:+d}",
+                f"Y {config['offset_y']:+d}",
+                f"Z {config['scale_x']:.2f}",
+            ]
         uv = status["uv"]
         thermal = status["thermal"]
         source = config["image_source"].upper()
@@ -243,8 +317,13 @@ class CardputerBridge:
         ]
 
     def _actions(self, status) -> str:
-        if self.menu:
-            return "BACK|LOOK|WIDE|TEMP -|TEMP +"
+        if self.screen is Screen.MENU:
+            return "BACK|LOOK|WIDE|CAL|TEMP"
+        if self.screen is Screen.CALIBRATE:
+            step = "COARSE" if self.coarse else "FINE"
+            return f"SAVE|ZOOM -|ZOOM +|{step}|CANCEL"
+        if self.screen is Screen.THRESHOLD:
+            return "DONE|-1.0|-0.5|+0.5|+1.0"
         record = "STOP" if status["recording"]["active"] else "RECORD"
         return f"MENU|SNAP|{record}|HUD|MODE"
 
@@ -364,6 +443,8 @@ def main():
         store.update("scale_x", 1.0)
         store.update("scale_y", 1.0)
     store.update("image_source", "rgb")
+    # Leaving mid-calibration must not keep the alignment grid on.
+    store.update("grid", False)
     process = subprocess.Popen(
         [sys.executable, "-m", "auracam.daemon", "--socket", str(socket_path), "--config", str(config_path)],
         stdout=sys.stderr,

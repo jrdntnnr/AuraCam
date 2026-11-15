@@ -10,8 +10,8 @@ recording on normal exit.
 | 4 | Menu | Back |
 | 5 | Snapshot | Camera look: natural, mono, hicon, fast |
 | 6 | Record/stop | Wide field of view on/off |
-| 7 | HUD mode: off, minimal, tactical | Threshold -0.5 C |
-| 8 | Aura mode | Threshold +0.5 C |
+| 7 | HUD mode: off, minimal, tactical | Calibrate thermal frame |
+| 8 | Aura mode | Threshold: -1.0, -0.5, +0.5, +1.0 C |
 
 The Cardputer always uses the onboard IMX219 through Picamera2 (the bridge
 forces `image_source` to `rgb` at start); the USB UV driver remains for the
@@ -19,6 +19,11 @@ Pi Zero build. Both feed the existing compositor and H.264 recorder. Captures ar
 settings in `~/.config/auracam/cardputer.json`. The screen uses the HUD's
 5x7 pixel font and amber palette: a centered 192x144 preview with probe, high
 and low markers, rates and mode on the left, temperatures on the right.
+Calibrate shows the thermal grid. F, Z, X, C (the Cardputer's arrows) move
+the thermal frame, 5/6 zoom it out/in keeping its aspect, 7 switches fine (2 px,
+1 %) and coarse (10 px, 5 %) steps, 4 saves and 8 restores the values from when
+calibration began. Calibrate in the normal (not wide) view.
+
 Camera looks are IMX219 ISP controls (no CPU cost): mono is zero
 saturation, hicon raises contrast and sharpening with highlight-priority
 exposure, fast prefers short shutters. Wide switches the sensor from the

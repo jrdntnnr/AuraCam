@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 import cv2
 import numpy as np
 
-from auracam.cardputer import PREVIEW_SIZE, TEXT_BYTES, CardputerBridge, boot
+from auracam.cardputer import PREVIEW_SIZE, TEXT_BYTES, CardputerBridge, Screen, boot
 from auracam.config import ConfigStore
 from auracam.rgb import RgbCamera
 
@@ -40,8 +40,6 @@ class CardputerTest(unittest.TestCase):
         client.request.return_value = {"config": {"hud_mode": "off", "camera_look": "natural"}}
         bridge = CardputerBridge(client)
         bridge.action("4")
-        bridge.action("7")
-        client.request.assert_called_with("adjust", name="threshold", delta=-0.5)
         bridge.action("4")
         bridge.action("6")
         client.request.assert_called_with("record", action="toggle")
@@ -95,6 +93,46 @@ class CardputerTest(unittest.TestCase):
             rgb = RgbCamera("natural", "crop")
         transform = rgb.overlay_transform((480, 640))
         self.assertEqual((transform.scale_x, transform.scale_y, transform.shift_x, transform.shift_y), (1.0, 1.0, 0, 0))
+
+    def test_calibration_moves_zooms_and_saves(self):
+        client = FakeClient(offset_x=0, offset_y=0, scale_x=1.0, scale_y=0.9, grid=False)
+        bridge = CardputerBridge(client)
+        for key in "47":
+            bridge.action(key)
+        self.assertTrue(client.config["grid"])
+        bridge.action("R")
+        self.assertEqual(client.config["offset_x"], 2)
+        bridge.action("7")
+        bridge.action("U")
+        self.assertEqual(client.config["offset_y"], -10)
+        bridge.action("6")
+        self.assertAlmostEqual(client.config["scale_x"], 1.05)
+        self.assertAlmostEqual(client.config["scale_y"], 0.945)
+        bridge.action("4")
+        self.assertFalse(client.config["grid"])
+        self.assertEqual((client.config["offset_x"], client.config["offset_y"]), (2, -10))
+        self.assertEqual(bridge.screen, Screen.CAPTURE)
+
+    def test_calibration_cancel_restores(self):
+        client = FakeClient(offset_x=5, offset_y=-3, scale_x=1.0, scale_y=1.0, grid=False)
+        bridge = CardputerBridge(client)
+        for key in "47LLD5":
+            bridge.action(key)
+        self.assertNotEqual(client.config["offset_x"], 5)
+        bridge.action("8")
+        self.assertEqual(
+            {k: client.config[k] for k in ("offset_x", "offset_y", "scale_x", "scale_y", "grid")},
+            {"offset_x": 5, "offset_y": -3, "scale_x": 1.0, "scale_y": 1.0, "grid": False},
+        )
+
+    def test_threshold_screen_steps(self):
+        client = FakeClient(threshold=26.0)
+        bridge = CardputerBridge(client)
+        for key in "485":
+            bridge.action(key)
+        self.assertEqual(client.config["threshold"], 25.0)
+        bridge.action("4")
+        self.assertEqual(bridge.screen, Screen.CAPTURE)
 
     def test_menu_keys_cycle_look_and_fov(self):
         client = MagicMock()
@@ -173,6 +211,20 @@ class CardputerTest(unittest.TestCase):
         client.request.return_value = response
         packet = CardputerBridge(client).packet()
         self.assertIn(b"WARMUP", packet[:TEXT_BYTES])
+
+
+class FakeClient:
+    """Control socket stand-in that applies set/adjust to a config dict."""
+
+    def __init__(self, **config):
+        self.config = config
+
+    def request(self, command, **payload):
+        if command == "set":
+            self.config[payload["name"]] = payload["value"]
+        elif command == "adjust":
+            self.config[payload["name"]] += payload["delta"]
+        return {"config": self.config}
 
 
 def rgb_camera_mock(crop=(1000, 752, 1280, 960)):
