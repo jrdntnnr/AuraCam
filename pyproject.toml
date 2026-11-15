@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "auracam"
+version = "0.2.0"
+description = "SSH-first UV camera and MLX90640 thermal-aura compositor"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+dependencies = ["numpy", "opencv-python", "Pillow", "pyusb"]
+
+[project.scripts]
+aura = "auracam.cli:main"
+
+[tool.setuptools]
+packages = ["auracam", "supercamera"]
+py-modules = ["protocol_camera"]

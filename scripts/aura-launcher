@@ -1,0 +1,4 @@
+#!/bin/sh
+export PYTHONPATH=/opt/auracam
+exec /opt/auracam/.venv/bin/python -m auracam.cli "$@"
+

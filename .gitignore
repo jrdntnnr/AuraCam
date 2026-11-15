@@ -1,10 +1,12 @@
 # Python
 __pycache__/
+.ruff_cache/
 *.py[cod]
 *.egg-info/
 dist/
 build/
 *.egg
+*.so
 
 # Virtual environments
 .venv/

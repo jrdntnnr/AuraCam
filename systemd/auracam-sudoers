@@ -1,0 +1,4 @@
+@AURA_USER@ ALL=(root) NOPASSWD: /usr/bin/systemctl start auracam.service
+@AURA_USER@ ALL=(root) NOPASSWD: /usr/bin/systemctl stop auracam.service
+@AURA_USER@ ALL=(root) NOPASSWD: /usr/bin/systemctl restart auracam.service
+@AURA_USER@ ALL=(root) NOPASSWD: /usr/bin/systemctl status auracam.service

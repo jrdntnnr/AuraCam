@@ -1,0 +1,26 @@
+[Unit]
+Description=AuraCam UV and MLX90640 compositor
+After=local-fs.target network.target
+
+[Service]
+Type=simple
+User=@AURA_USER@
+Group=@AURA_USER@
+SupplementaryGroups=video plugdev i2c
+WorkingDirectory=/opt/auracam
+Environment=PYTHONPATH=/opt/auracam
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/auracam/.venv/bin/python -m auracam.daemon
+Restart=on-failure
+RestartSec=2
+RuntimeDirectory=auracam
+RuntimeDirectoryMode=0770
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/home/@AURA_USER@/.config/auracam /home/@AURA_USER@/Pictures/auracam
+
+[Install]
+WantedBy=multi-user.target
+
