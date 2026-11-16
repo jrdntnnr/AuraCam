@@ -245,7 +245,7 @@ class AuraDaemon:
         config = self.config_store.get()
         self._active_source = config.image_source
         camera = (
-            RgbCamera(config.camera_look, config.camera_fov)
+            RgbCamera(config.camera_look, config.camera_fov, config.exposure_ev)
             if self._active_source == "rgb"
             else Camera()
         )
@@ -304,6 +304,8 @@ class AuraDaemon:
                     continue
                 if config.camera_look != camera.look:
                     camera.set_look(config.camera_look)
+                if config.exposure_ev != camera.exposure:
+                    camera.set_exposure(config.exposure_ev)
             config = overlay_config(config, self._overlay)
             started = time.monotonic()
             try:

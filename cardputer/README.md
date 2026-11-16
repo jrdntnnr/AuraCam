@@ -81,6 +81,39 @@ A first run writes `refresh_hz` 16 and `host_fps_cap` 15 into
 `~/.config/auracam/cardputer.json`; the preview is encoded at the panel's
 192x144 so the daemon does not JPEG a 640x480 frame per preview.
 
+A first run also starts in the wide view with the Cardputer's thermal
+alignment (offset 64, -60, zoom 1.69, thermal rotated 180 and mirrored).
+
+## 8ANGLE knobs
+
+Plug an M5Stack 8ANGLE into the Grove port. It stretches the I2C clock,
+which locks the Pi's hardware bus, so it runs on its own bit-banged bus on
+the port's UART pins (GPIO14/15). Once, then reboot:
+
+```sh
+sudo sed -i "s/^enable_uart=1/enable_uart=0/" /boot/firmware/config.txt
+echo "dtoverlay=i2c-gpio,bus=3,i2c_gpio_sda=14,i2c_gpio_scl=15,i2c_gpio_delay_us=2" \
+  | sudo tee -a /boot/firmware/config.txt
+```
+
+AuraCam powers the port and keeps it in UART mode. A knob takes over its
+setting only once turned past the current value.
+
+| Knob | Sets | Range |
+|------|------|-------|
+| 1 | threshold | 15-45 C |
+| 2 | thermal opacity | 0-1 |
+| 3 | range low | 0-30 C |
+| 4 | range high | 32-60 C |
+| 5 | blur | 0-30 |
+| 6 | smoothing | 0-0.95 |
+| 7 | camera exposure | -2 to +2 EV |
+| 8 | contrast | 0.5-2 |
+
+Switch up enters calibration: knobs 1-3 move X, Y and zoom with the grid
+shown. Switch down saves. The unit's LEDs stay off; writing them hangs
+firmware 1.
+
 Run the hardware smoke test from the repository root:
 
 ```sh

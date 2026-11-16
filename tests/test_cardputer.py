@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 import cv2
 import numpy as np
 
+from auracam.angle8 import Reading
 from auracam.cardputer import PREVIEW_SIZE, TEXT_BYTES, CardputerBridge, Screen, boot
 from auracam.config import ConfigStore
 from auracam.rgb import RgbCamera
@@ -75,6 +76,43 @@ class CardputerTest(unittest.TestCase):
         self.assertGreater(controls["Contrast"], 1.0)
         self.assertEqual(controls["Saturation"], 1.0)
         self.assertEqual(rgb.look, "hicon")
+
+    def test_rgb_exposure_sets_ev(self):
+        camera = rgb_camera_mock()
+        with patch.dict("sys.modules", {"picamera2": camera.module, "libcamera": MagicMock()}):
+            rgb = RgbCamera("natural", "crop", -1.0)
+            rgb.set_exposure(0.5)
+        first = camera.instance.create_video_configuration.call_args.kwargs["controls"]
+        self.assertEqual(first["ExposureValue"], -1.0)
+        camera.instance.set_controls.assert_called_with({"ExposureValue": 0.5})
+        self.assertEqual(rgb.exposure, 0.5)
+
+    def test_knob_switch_calibrates_and_saves(self):
+        client = MagicMock()
+        knobs = SimpleNamespace(latest=Reading((0.0,) * 8, False))
+        bridge = CardputerBridge(client, knobs)
+        bridge._config = knob_config()
+        bridge.turn_knobs()
+        knobs.latest = Reading((0.0,) * 8, True)
+        bridge.turn_knobs()
+        self.assertIs(bridge.screen, Screen.CALIBRATE)
+        client.request.assert_any_call("set", name="grid", value=True)
+        knobs.latest = Reading((0.0,) * 8, False)
+        bridge.turn_knobs()
+        self.assertIs(bridge.screen, Screen.CAPTURE)
+        client.request.assert_called_with("set", name="grid", value=False)
+
+    def test_knob_sets_threshold_after_pickup(self):
+        client = MagicMock()
+        positions = [11 / 30] + [0.0] * 7
+        knobs = SimpleNamespace(latest=Reading(tuple(positions), False))
+        bridge = CardputerBridge(client, knobs)
+        bridge._config = knob_config()
+        bridge.turn_knobs()
+        client.request.assert_not_called()
+        knobs.latest = Reading((0.5,) + tuple(positions[1:]), False)
+        bridge.turn_knobs()
+        client.request.assert_called_once_with("set", name="threshold", value=30.0)
 
     def test_rgb_wide_uses_full_sensor_and_shrinks_overlay(self):
         camera = rgb_camera_mock(crop=(0, 2, 3280, 2460))
@@ -178,7 +216,7 @@ class CardputerTest(unittest.TestCase):
         process.poll.return_value = None
         client = MagicMock()
         client.request.side_effect = [OSError(), preview(fps=0.0, jpeg=""), preview(fps=30.0, jpeg=tiny_jpeg())]
-        bridge = CardputerBridge(client)
+        bridge = CardputerBridge(client, SimpleNamespace(firmware=1, latest=None))
         with patch("auracam.cardputer.emit") as emitted, \
                 patch("auracam.cardputer._read_keys", return_value=""), \
                 patch("auracam.cardputer.BOOT_DONE_HOLD_S", 0.0):
@@ -191,6 +229,7 @@ class CardputerTest(unittest.TestCase):
         self.assertIn(b"CAMERA|30FPS", last)
         self.assertIn(b"THERMAL|16HZ", last)
         self.assertIn(b"FRAME|OK", last)
+        self.assertIn(b"KNOBS|OK", last)
 
     def test_boot_stops_when_frontend_quits(self):
         client = MagicMock()
@@ -238,6 +277,14 @@ class FakeClient:
         elif command == "adjust":
             self.config[payload["name"]] += payload["delta"]
         return {"config": self.config}
+
+
+def knob_config():
+    return {
+        "threshold": 26.0, "max_alpha": 0.58, "thermal_min": 20.0, "thermal_max": 38.0,
+        "blur": 9.0, "smoothing": 0.35, "exposure_ev": 0.0, "contrast": 1.0,
+        "offset_x": 64, "offset_y": -60, "scale_x": 1.69, "scale_y": 1.69, "grid": False,
+    }
 
 
 def rgb_camera_mock(crop=(1000, 752, 1280, 960)):

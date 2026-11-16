@@ -44,19 +44,20 @@ LOOK_CONTROLS = {
 class RgbCamera:
     button_press_count = 0
 
-    def __init__(self, look: str, fov: str):
+    def __init__(self, look: str, fov: str, exposure: float = 0.0):
         from libcamera import Transform
         from picamera2 import Picamera2
 
         self.look = look
         self.fov = fov
+        self.exposure = exposure
         self._camera = Picamera2()
         try:
             flipped = self._camera.camera_properties.get("Rotation", 0) == UPSIDE_DOWN
             options = {"sensor": WIDE_SENSOR} if fov == "wide" else {}
             config = self._camera.create_video_configuration(
                 main={"size": FRAME_SIZE, "format": "RGB888"},
-                controls={"FrameRate": FRAME_RATE, **LOOK_CONTROLS[look]},
+                controls={"FrameRate": FRAME_RATE, **LOOK_CONTROLS[look], "ExposureValue": exposure},
                 buffer_count=BUFFER_COUNT,
                 transform=Transform(hflip=flipped, vflip=flipped),
                 **options,
@@ -71,6 +72,11 @@ class RgbCamera:
     def set_look(self, look: str) -> None:
         self._camera.set_controls(LOOK_CONTROLS[look])
         self.look = look
+
+    def set_exposure(self, exposure: float) -> None:
+        """Auto-exposure bias in stops, e.g. -1.0 halves the target level."""
+        self._camera.set_controls({"ExposureValue": exposure})
+        self.exposure = exposure
 
     def overlay_transform(self, shape: tuple[int, ...]) -> OverlayTransform:
         """Map the calibrated overlay into the active crop.

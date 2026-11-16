@@ -27,10 +27,12 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from .angle8 import KnobPoller
 from .cli import AuraClient
 from .config import ConfigStore
 from .control import CAMERA_FOVS, CAMERA_LOOKS, HUD_MODES, MODES, CameraFov, CameraLook, HudMode
 from .hud import CornerMarks, HudRenderer, Marker, palette_rgb
+from .knobs import KnobDeck, Layer
 
 PREVIEW_SIZE = (192, 144)
 TEXT_BYTES = 1024
@@ -60,6 +62,22 @@ THRESHOLD_STEPS = (0.5, 2.0)
 # Thermal gradients offered on the Cardputer, in cycle order.
 GRADIENTS = ("aura", "ironbow", "amber", "whitehot", "turbo", "arctic")
 GRADIENT_HOLD_S = 1.5
+KNOB_GRACE_S = 3.0
+
+# Fresh installs start wide with the Cardputer's measured thermal alignment.
+FIRST_RUN = {
+    "refresh_hz": THERMAL_REFRESH_HZ,
+    "host_fps_cap": COMPOSITE_FPS,
+    "hud_palette": PALETTE,
+    "hud_mode": HudMode.TACTICAL.value,
+    "camera_fov": CameraFov.WIDE.value,
+    "offset_x": 64,
+    "offset_y": -60,
+    "scale_x": 1.6941,
+    "scale_y": 1.6941,
+    "thermal_rotation": 180,
+    "thermal_mirror_h": True,
+}
 EXT_POWER = Path("/sys/class/leds/ext_5v_out/brightness")
 I2C_CLOCK = Path("/proc/device-tree/soc/i2c@7e804000/clock-frequency")
 
@@ -119,8 +137,12 @@ class BootLog:
 
 
 class CardputerBridge:
-    def __init__(self, client):
+    def __init__(self, client, knobs=None):
         self.client = client
+        self.knobs = knobs
+        self._deck = KnobDeck()
+        self._switch: bool | None = None
+        self._config: dict | None = None
         self.screen = Screen.CAPTURE
         self.coarse = False
         self.coarse_threshold = False
@@ -166,14 +188,22 @@ class CardputerBridge:
         elif key == "6":
             self._cycle(config, "camera_fov", CAMERA_FOVS)
         elif key == "7":
-            # Remember the calibration to restore on cancel; the grid shows
-            # the whole thermal frame while aligning it.
-            self._calibration = {name: config[name] for name in CALIBRATION_FIELDS}
-            self.coarse = False
-            self._set("grid", True)
-            self.screen = Screen.CALIBRATE
+            self._start_calibration(config)
         elif key == "8":
             self.screen = Screen.IR
+
+    def _start_calibration(self, config):
+        # Remember the calibration to restore on cancel; the grid shows the
+        # whole thermal frame while aligning it.
+        self._calibration = {name: config[name] for name in CALIBRATION_FIELDS}
+        self.coarse = False
+        self._set("grid", True)
+        self.screen = Screen.CALIBRATE
+
+    def _save_calibration(self):
+        self._set("grid", self._calibration["grid"])
+        self.say("CALIBRATION SAVED")
+        self.screen = Screen.CAPTURE
 
     def _calibrate_key(self, key, config):
         if key in ARROWS:
@@ -191,9 +221,7 @@ class CardputerBridge:
         elif key == "7":
             self.coarse = not self.coarse
         elif key == "4":
-            self._set("grid", self._calibration["grid"])
-            self.say("CALIBRATION SAVED")
-            self.screen = Screen.CAPTURE
+            self._save_calibration()
         elif key == "8":
             for name, value in self._calibration.items():
                 self._set(name, value)
@@ -214,6 +242,25 @@ class CardputerBridge:
             self.client.request("adjust", name="threshold", delta=step if key == "7" else -step)
         elif key == "8":
             self.coarse_threshold = not self.coarse_threshold
+
+    # 8ANGLE: knobs set values (see knobs.py); the switch up calibrates,
+    # down saves.
+    def turn_knobs(self) -> None:
+        reading = self.knobs.latest if self.knobs else None
+        if reading is None or self._config is None:
+            return
+
+        previous, self._switch = self._switch, reading.switch
+        if previous is not None and previous != reading.switch:
+            if reading.switch:
+                self._start_calibration(self._config)
+            elif self.screen is Screen.CALIBRATE:
+                self._save_calibration()
+
+        layer = Layer.CALIBRATE if self.screen is Screen.CALIBRATE else Layer.CAPTURE
+        for name, value in self._deck.changes(reading.knobs, self._config, layer):
+            self._set(name, value)
+            self._config[name] = value
 
     def _cycle(self, config, name, choices):
         self._set(name, choices[(choices.index(config[name]) + 1) % len(choices)])
@@ -238,6 +285,7 @@ class CardputerBridge:
             return self.boot_packet(log, f"ENGINE OFFLINE {exc}"[:60])
         status = response["status"]
         self.palette = status["config"]["hud_palette"]
+        self._config = dict(status["config"])
         self._update_pixels(response["jpeg"], status)
         header = self._header(status)
         left = "\n".join(line[:SIDE_CHARS] for line in self._left(status))
@@ -381,6 +429,7 @@ def boot(process, client, bridge) -> bool:
     log = bridge.log
     log.set("BRIDGE", State.OK)
     _hardware_steps(log)
+    log.set("KNOBS", State.RUN)
     log.set("ENGINE", State.RUN)
     started = time.monotonic()
     engine_at = None
@@ -411,6 +460,7 @@ def boot(process, client, bridge) -> bool:
             log.set("CAMERA", State.RUN)
             log.set("THERMAL", State.RUN)
         _camera_step(log, status)
+        _knob_step(log, bridge.knobs, elapsed)
         _thermal_step(log, status, time.monotonic() - engine_at)
         footer = (status["uv"]["error"] or "")[:60]
         if response["jpeg"] and log.state("FRAME") is None:
@@ -431,6 +481,13 @@ def _camera_step(log: BootLog, status) -> None:
         log.set("CAMERA", State.FAIL)
 
 
+def _knob_step(log: BootLog, knobs, elapsed: float) -> None:
+    if knobs is not None and knobs.firmware is not None:
+        log.set("KNOBS", State.OK)
+    elif knobs is None or elapsed > KNOB_GRACE_S:
+        log.set("KNOBS", State.OFF)
+
+
 def _thermal_step(log: BootLog, status, since_engine: float) -> None:
     thermal = status["thermal"]
     if thermal["connected"] and thermal["min"] is not None:
@@ -443,7 +500,9 @@ def _settled(log: BootLog) -> bool:
     """Camera and thermal steps resolved (thermal may be offline)."""
     camera = log.state("CAMERA")
     thermal = log.state("THERMAL")
-    return camera not in (None, State.RUN.value, State.FAIL.value) and thermal != State.RUN.value
+    knobs = log.state("KNOBS")
+    resolved = State.RUN.value not in (thermal, knobs)
+    return camera not in (None, State.RUN.value, State.FAIL.value) and resolved
 
 
 def main():
@@ -452,12 +511,8 @@ def main():
     config_path = Path.home() / ".config/auracam/cardputer.json"
     store = ConfigStore(config_path)
     if not config_path.exists():
-        store.update("refresh_hz", THERMAL_REFRESH_HZ)
-        store.update("host_fps_cap", COMPOSITE_FPS)
-        store.update("hud_palette", PALETTE)
-        store.update("hud_mode", HudMode.TACTICAL.value)
-        store.update("scale_x", 1.0)
-        store.update("scale_y", 1.0)
+        for name, value in FIRST_RUN.items():
+            store.update(name, value)
     store.update("image_source", "rgb")
     # Leaving mid-calibration must not keep the alignment grid on.
     store.update("grid", False)
@@ -466,7 +521,9 @@ def main():
         stdout=sys.stderr,
     )
     client = AuraClient(str(socket_path))
-    bridge = CardputerBridge(client)
+    knobs = KnobPoller()
+    knobs.start()
+    bridge = CardputerBridge(client, knobs)
     try:
         if not boot(process, client, bridge):
             return
@@ -479,6 +536,10 @@ def main():
                     bridge.action(key)
                 except Exception as exc:
                     bridge.say(str(exc), ERROR_HOLD_S)
+            try:
+                bridge.turn_knobs()
+            except Exception as exc:
+                bridge.say(str(exc), ERROR_HOLD_S)
             emit(bridge.packet())
     except RuntimeError as exc:
         bridge.log.set("START", State.FAIL)
@@ -487,6 +548,7 @@ def main():
     except BrokenPipeError:
         pass
     finally:
+        knobs.stop()
         process.terminate()
         try:
             process.wait(timeout=30)

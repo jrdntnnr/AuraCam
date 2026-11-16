@@ -63,6 +63,7 @@ class AuraConfig:
     hud_mode: str = "off"
     camera_look: str = "natural"
     camera_fov: str = "crop"
+    exposure_ev: float = 0.0
     hud_palette: str = "green"
     probe_x: int = 16
     probe_y: int = 12
@@ -103,6 +104,7 @@ _RANGES: dict[str, tuple[float, float]] = {
     "saturation": (0.0, 3.0),
     "gamma": (0.1, 4.0),
     "sharpness": (0.0, 4.0),
+    "exposure_ev": (-8.0, 8.0),
     "host_fps_cap": (1, 30),
     "jpeg_quality": (40, 100),
     "probe_x": (0, 31),
