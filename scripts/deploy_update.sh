@@ -14,7 +14,7 @@ STAMP=$(date +%Y%m%d-%H%M%S)
 BACKUP="$BACKUP_DIR/auracam-$STAMP.tar.gz"
 SERVICE_WAS_ACTIVE=0
 BACKUP_READY=0
-MANAGED_ITEMS="AGENTS.md CLAUDE.md GEMINI.md agent.md auracam protocol_camera.py pyproject.toml README.md scripts supercamera systemd tests"
+MANAGED_ITEMS="auracam protocol_camera.py pyproject.toml README.md scripts supercamera systemd tests"
 
 restart_on_failure() {
   status=$?

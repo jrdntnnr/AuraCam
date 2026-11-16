@@ -34,3 +34,16 @@ settings.json
 
 # Pictures output
 Pictures/
+
+# Agent instructions and local tool state
+AGENTS.md
+CLAUDE.md
+GEMINI.md
+agent.md
+.claude/
+.codex/
+
+# Logs and local lockfiles
+*.log
+logs/
+uv.lock

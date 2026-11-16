@@ -65,7 +65,7 @@ The thermal module sits on the top EXT port, which carries I2C1 (`/dev/i2c-1`,
 shared with the keyboard and the M5IOE1 expander) and a switched 5 V output.
 `launch.sh` turns that output on through `/sys/class/leds/ext_5v_out`; without
 it the sensor is unpowered and `aura doctor` reports no device at `0x33`. The
-Grove port shares the same bus. Do not apply the Pi Zero installation script to
+Grove port is routed to its UART pins (see 8ANGLE knobs). Do not apply the Pi Zero installation script to
 this device: it changes global I2C settings shared with the keyboard and onboard
 peripherals.
 

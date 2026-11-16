@@ -1,22 +1,236 @@
-# AuraCam for Raspberry Pi Zero 2 W
+# AuraCam
 
-AuraCam combines the proprietary 640×480 USB UV camera with an MLX90640
-32×24 thermal array. It keeps the full UV frame visible and adds a registered,
-interpolated, semi-transparent thermal aura. The capture engine runs as a
-background service designed to be controlled over SSH.
+AuraCam fuses a camera image with an MLX90640 32×24 thermal array. The
+thermal field is registered to the camera frame, interpolated and blended as
+a semi-transparent aura, with an optional telemetry HUD burned into snapshots
+and H.264 recordings.
 
-The short command is simply:
+It runs on two builds:
+
+- **M5Stack Cardputer Zero**: onboard IMX219 camera, LVGL app on the
+  320×170 screen, keyboard and optional 8ANGLE knob controls.
+- **Raspberry Pi Zero 2 W**: proprietary USB UV camera, controlled over SSH
+  with the `aura` CLI and a terminal preview.
+
+Both share one capture daemon, compositor, HUD and recorder.
+
+## Hardware
+
+### Cardputer Zero build
+
+| Part | Role |
+|---|---|
+| [M5Stack Cardputer Zero](https://docs.m5stack.com/en/CardputerZero) | Host: Raspberry Pi CM0 (BCM2837, 4× Cortex-A53 1 GHz, 512 MB), 1.9" 320×170 LCD, 46-key keyboard, 1750 mAh battery |
+| IMX219 8 MP CSI camera | Onboard RGB image source, via Picamera2 |
+| MLX90640 thermal breakout | 32×24 thermal array on the top EXT header, I²C address `0x33` |
+| [M5Stack 8ANGLE](https://docs.m5stack.com/en/unit/8Angle) (optional) | Eight knobs and a switch on the Grove port |
+
+The EXT header has no 3.3 V pin. Use an MLX90640 breakout with its own 3.3 V
+regulator that accepts 5 V on VIN and pulls SDA/SCL up to 3.3 V, not 5 V.
+
+### Pi Zero 2 W build
+
+| Part | Role |
+|---|---|
+| Raspberry Pi Zero 2 W | Host |
+| USB UV camera using `com.useeplus.protocol` (`2ce3:3828`, `0329:2022`) | 640×480 JPEG image source |
+| MLX90640 thermal breakout | 32×24 thermal array on the 40-pin header |
+
+## Features
+
+- **Thermal fusion** in seven aura modes: debug, clean, threshold, trail,
+  pixel, ghost and glitch.
+- **Thermal gradients**: aura, ironbow, amber, whitehot, turbo, arctic,
+  inferno, ocean and magma.
+- **Manual registration**: offset, zoom, independent camera and thermal
+  rotation, horizontal thermal mirror, fine rotation.
+- **HUD** off, minimal or tactical, in a 5×7 pixel font with green, amber or
+  white palettes. Probe, high and low markers stay registered to the thermal
+  field. The selected HUD is burned into snapshots and recordings.
+- **Captures**: 640×480 JPEG snapshots and H.264 MP4 recordings through the
+  Pi's hardware encoder. A warm spare encoder starts recordings instantly, and
+  timestamps are rescaled to the measured interval before the file is
+  published atomically.
+- **Cardputer camera looks**: natural, mono, hicon and fast, plus a wide
+  field of view that combines with any look. Looks are IMX219 ISP controls,
+  so they cost no CPU. In wide view the thermal overlay rescales to stay
+  registered.
+- **Cardputer calibration screen** with the thermal grid, arrow-key movement
+  and zoom, save and cancel.
+- **8ANGLE knobs** with soft pickup for threshold, opacity, range, blur,
+  smoothing, camera exposure and contrast. Its switch enters and saves
+  calibration.
+- **SSH control** on the Pi: `aura` CLI, true-color terminal preview and a
+  Unix-socket control API.
+- **Original UV camera GUI** for UV-only capture.
+
+## Cardputer Zero
+
+### Top expansion header (EXT 2.54-14P)
+
+```text
+              EXT 2.54-14P, top edge
+  pin  signal        GPIO          pin  signal       GPIO
+   1   HAT_P0        G26 / USB4_D+   2   5VIN
+   3   HAT_P1        G23 / USB4_D-   4   GND          <- MLX90640 GND
+   5   GPIO          G22             6   5VOUT        <- MLX90640 VIN
+   7   SPI0_CLK      G11             8   I2C1_SDA G2  <- MLX90640 SDA
+   9   SPI0_MOSI     G10            10   I2C1_SCL G3  <- MLX90640 SCL
+  11   SPI0_MISO     G9             12   UART_RXD G15 <- 8ANGLE bus SCL
+  13   SPI0_CS1      G7             14   UART_TXD G14 <- 8ANGLE bus SDA
+```
+
+| Pin | Signal | AuraCam use |
+|---:|---|---|
+| 1 | HAT_P0, G26 (USB or GPIO, set by M5IOE1 `PYG1_HAT_SW`) | Unused |
+| 2 | 5VIN | Unused |
+| 3 | HAT_P1, G23 (USB or GPIO) | Unused |
+| 4 | GND | MLX90640 GND |
+| 5 | G22 | Unused |
+| 6 | 5VOUT, switched | MLX90640 VIN |
+| 7 | SPI0_CLK, G11 | Unused |
+| 8 | I2C1_SDA, G2 | MLX90640 SDA |
+| 9 | SPI0_MOSI, G10 | Unused |
+| 10 | I2C1_SCL, G3 | MLX90640 SCL |
+| 11 | SPI0_MISO, G9 | Unused |
+| 12 | UART_RXD, G15 | Shared with the Grove port; 8ANGLE SCL with the overlay below |
+| 13 | SPI0_CS1, G7 | Unused |
+| 14 | UART_TXD, G14 | Shared with the Grove port; 8ANGLE SDA with the overlay below |
+
+Pin numbering follows the M5Stack specification. Check pin 1 on the
+silkscreen before wiring, and power the device off before plugging anything
+in: the header is not hot-swappable.
+
+- **5VOUT is switched** by the M5IOE1 expander (`/sys/class/leds/ext_5v_out`).
+  `cardputer/launch.sh` turns it on. Without it the MLX90640 is unpowered.
+- **I2C1 is shared** with the onboard peripherals. Keep their addresses free:
+
+  | Address | Device |
+  |---|---|
+  | `0x10` | ES8389 audio codec |
+  | `0x32` | RX8130 RTC |
+  | `0x33` | MLX90640 |
+  | `0x34` | TCA8418 keyboard |
+  | `0x4F` | M5IOE1 I/O expander |
+  | `0x55` | BQ27220 fuel gauge |
+  | `0x68` | BMI270 IMU |
+
+- **Power budget**: EXT and Grove 5 V outputs share a limit under 500 mA.
+
+### Grove port (HY2.0-4P)
+
+| Wire | Signal |
+|---|---|
+| Black | GND |
+| Red | 5 V, switched by M5IOE1 `PYG4_GROVE_EN` (`/sys/class/leds/grove_5v_out`) |
+| Yellow | G14 UART_TXD, or G2 I2C1_SDA |
+| White | G15 UART_RXD, or G3 I2C1_SCL |
+
+GPIO4 selects the routing: low is UART (default), high is I2C1. AuraCam keeps
+the port on UART routing and powers it at launch. The 8ANGLE stretches the
+I²C clock, which the Pi's hardware I²C mishandles: on I2C1 it locks the
+keyboard and thermal bus. It therefore runs on a bit-banged bus on G14/G15
+(`/dev/i2c-3`).
+
+### Set up
+
+On the Cardputer, with the repository at `/home/zero/auracam`:
+
+```sh
+sudo apt install build-essential cmake ffmpeg python3-numpy python3-opencv python3-picamera2
+
+# 400 kHz I2C1 lets the MLX90640 run at 16 Hz (default 100 kHz gives ~4 Hz).
+sudo scripts/set_i2c_baud.sh 400000
+
+# Optional, for the 8ANGLE: a separate I2C bus on the Grove UART pins.
+sudo sed -i "s/^enable_uart=1/enable_uart=0/" /boot/firmware/config.txt
+echo "dtoverlay=i2c-gpio,bus=3,i2c_gpio_sda=14,i2c_gpio_scl=15,i2c_gpio_delay_us=2" \
+  | sudo tee -a /boot/firmware/config.txt
+
+sudo reboot
+```
+
+Build and add the launcher entry:
+
+```sh
+sh scripts/build_native.sh
+cmake -S cardputer -B cardputer/build -DCMAKE_BUILD_TYPE=Release
+cmake --build cardputer/build -j2
+sudo install -m 644 cardputer/auracam.png /usr/share/APPLaunch/share/images/
+sudo install -m 644 cardputer/aura-cardputer.desktop /usr/share/APPLaunch/applications/
+systemctl --user restart APPLaunch.service
+```
+
+AuraCam then appears in the APPLaunch carousel. Startup shows a terminal log
+of each step: bridge, 5 V, I²C clock, knobs, engine, camera, thermal and the
+first frame.
+
+Do not run `scripts/install_pi.sh` on the Cardputer. It changes system I²C
+settings shared with the keyboard.
+
+### Controls
+
+Keys 4 to 8 sit under the five on-screen labels. Hold Esc for 3 s to quit.
+
+| Key | Capture | Menu | Calibrate | IR |
+|---|---|---|---|---|
+| 4 | Menu | Back | Save | Done |
+| 5 | Snapshot | Look: natural, mono, hicon, fast | Zoom out | Next gradient |
+| 6 | Record / stop | Wide on/off | Zoom in | Threshold down |
+| 7 | HUD: off, minimal, tactical | Calibrate | Fine / coarse step | Threshold up |
+| 8 | Aura mode | IR screen | Cancel | Step 0.5 °C / 2 °C |
+
+In Calibrate, F, Z, X and C move the thermal frame up, left, down and right.
+
+8ANGLE knobs:
+
+| Knob | Sets | Range |
+|---:|---|---|
+| 1 | Threshold | 15 to 45 °C |
+| 2 | Thermal opacity | 0 to 1 |
+| 3 | Range low | 0 to 30 °C |
+| 4 | Range high | 32 to 60 °C |
+| 5 | Blur | 0 to 30 |
+| 6 | Smoothing | 0 to 0.95 |
+| 7 | Camera exposure | −2 to +2 EV |
+| 8 | Contrast | 0.5 to 2 |
+
+A knob takes over its setting only once turned past the current value, so
+nothing jumps at launch or after a key changes it. Switch up enters
+calibration, where knobs 1 to 3 set X, Y and zoom. Switch down saves. The
+unit's LEDs stay off because writing them hangs its firmware 1.
+
+### Files
+
+- Captures: `~/Pictures/auracam/`
+- Settings: `~/.config/auracam/cardputer.json`
+
+A first run starts in the wide view at 16 Hz thermal and 15 fps composite,
+with the tactical HUD in amber and the measured alignment of the reference
+build: offset 64, −60, zoom 1.69, thermal rotated 180° and mirrored.
+
+The `aura` CLI also drives the Cardputer engine while the app runs. From the
+repository root:
+
+```sh
+AURACAM_SOCKET=$XDG_RUNTIME_DIR/auracam-cardputer.sock python3 -m auracam status
+```
+
+More detail is in [cardputer/README.md](cardputer/README.md).
+
+## Pi Zero 2 W
+
+The Pi build runs the capture engine as a background service controlled over
+SSH. The short command is simply:
 
 ```bash
 aura
 ```
 
 With no arguments, `aura` opens a true-color live terminal preview. It works
-from any directory and does not require X forwarding. The UV capture, thermal
-sensor, compositor, recording, and CLI are separate modules so the USB source
-can later be replaced by an IMX219/libcamera source.
+from any directory and does not require X forwarding.
 
-## Connect
+### Connect
 
 The prepared Pi image uses host `zero` and user `zero`:
 
@@ -28,7 +242,7 @@ aura
 If mDNS is unavailable, use the Pi's IP address instead of `zero.local`.
 AuraCam starts automatically at boot; the CLI starts it on demand if needed.
 
-## CLI controls
+### CLI controls
 
 Inside the interactive terminal preview:
 
@@ -97,7 +311,7 @@ The UV percentage is relative image brightness, not a calibrated UV index. Probe
 coordinates address the MLX90640's native 32×24 cells and remain registered after
 thermal rotation, scale, offset, and fine rotation.
 
-## Captures
+### Captures
 
 Completed snapshots and recordings are published to `~/Pictures/auracam/`:
 
@@ -115,7 +329,7 @@ scp 'zero@zero.local:/home/zero/Pictures/auracam/aura_*' \
   ~/Desktop/AuraCam-captures/
 ```
 
-## Aura modes
+### Aura modes
 
 1. **Debug** — true 32×24 cell grid, alignment crosshair, and visible bounds.
 2. **Clean** — smooth, blurred, semi-transparent aura.
@@ -139,7 +353,7 @@ applies Gaussian softness, maps the palette, and derives alpha from threshold,
 does not leave a rectangular border. `grid` is a separate diagnostic overlay;
 Pixel mode keeps nearest-neighbour cells intentionally.
 
-## Architecture
+### Architecture
 
 ```text
 USB JPEG ─ OpenCV decode ─ corruption guard ─┐
@@ -178,7 +392,7 @@ Key modules:
 - `auracam/daemon.py` — capture loops, snapshots, recording, and control socket.
 - `auracam/cli.py` — `aura` commands and SSH terminal preview.
 
-## MLX90640 wiring
+### MLX90640 wiring
 
 Use the Pi Zero 2 W 40-pin header:
 
@@ -207,7 +421,7 @@ The baud-rate script accepts 100 kHz, 400 kHz, or 1 MHz, backs up the active Pi
 boot configuration, and requires a reboot. The MLX90640 interface exposes 64 Hz,
 but 32 Hz is the tested operating point for the Pi Zero 2 W.
 
-## Pi installation
+### Pi installation
 
 The prepared SD runs this automatically on first boot. For a manual install on
 another Raspberry Pi OS image:
@@ -238,7 +452,7 @@ Run the local compile and test suite with:
 scripts/check.sh
 ```
 
-## Diagnostics
+### Diagnostics
 
 `aura status` reports UV capture FPS, thermal subpage FPS, compositor FPS,
 dropped UV frames, I²C errors, sensor refresh rate, min/max/ambient temperature,
@@ -246,9 +460,7 @@ overlay transform, and recording state. The service retries disconnected
 hardware without exiting, so USB and MLX90640 modules can be connected after
 boot.
 
----
-
-## Original UV Camera / Supercamera GUI
+## Original UV camera GUI
 
 The original touch-friendly GUI remains available and unchanged. It remains
 useful for native/lossless UV-only capture and the earlier image controls.
@@ -261,7 +473,7 @@ These devices are not standard UVC cameras, so applications such as guvcview
 and qv4l2 cannot open them directly. This project talks to their vendor-specific
 USB bulk endpoints and provides a native desktop interface.
 
-## Features
+### Features
 
 - Live preview with a configurable host-side FPS cap
 - Portrait-first operation with correct 0°, 90°, 180° and 270° transforms
@@ -278,7 +490,7 @@ USB bulk endpoints and provides a native desktop interface.
 Settings are stored in `~/.config/uv-camera/settings.json`. Captures are stored
 in `~/Pictures/supercamera/`.
 
-## Camera limitations
+### Camera limitations
 
 The tested hardware sends baseline JPEG frames at a native resolution of
 640×480, at up to approximately 30 frames per second. The known protocol does
@@ -290,7 +502,7 @@ not a sensor command.
 the camera's original JPEG coefficients and uses `jpegtran` for lossless
 portrait rotation/mirroring. Upscaling cannot add sensor detail.
 
-## Requirements
+### Requirements
 
 - Linux and Python 3.10+
 - Tkinter
@@ -314,7 +526,7 @@ python3 -m venv --system-site-packages .venv
 .venv/bin/pip install supercamera pillow
 ```
 
-## Device permissions
+### Device permissions
 
 Install the included udev rules, reload them, then reconnect the camera:
 
@@ -327,7 +539,7 @@ sudo udevadm trigger
 The rules grant the active desktop user access through the `video` group and
 `uaccess`; they do not make the device world-writable.
 
-## Run
+### Run
 
 ```bash
 .venv/bin/python camera_gui.py
@@ -345,7 +557,7 @@ Keyboard shortcuts:
 | `Esc` | Leave fullscreen |
 | `Q` | Quit |
 
-## Output
+### Output
 
 - Snapshots: `~/Pictures/supercamera/snap_<timestamp>_<size>.jpg`
 - Recordings: `~/Pictures/supercamera/rec_<timestamp>_<size>.mp4`
@@ -355,7 +567,7 @@ Keyboard shortcuts:
 The Full HD option letterboxes aspect-ratio differences instead of cropping the
 4:3 sensor image. Native portrait output is 480×640.
 
-## Protocol notes
+### Protocol notes
 
 The camera uses vendor-specific bulk endpoints:
 
@@ -378,6 +590,17 @@ Image packets begin with a 12-byte wrapper whose first bytes are `AA BB`. The
 wrapper carries frame, stream and physical-button metadata. `protocol_camera.py`
 contains the application-facing implementation. `protocol_test.py` contains
 research commands and may interrupt streaming; it is not needed to run the GUI.
+
+## Repository layout
+
+- `auracam/`: capture daemon, compositor, HUD, thermal driver, CLI, the
+  Cardputer bridge (`cardputer.py`) and 8ANGLE driver (`angle8.py`, `knobs.py`).
+- `cardputer/`: LVGL frontend, font, icon, launcher entry and launch script.
+- `supercamera/`, `protocol_camera.py`: USB UV camera driver.
+- `vendor/melexis/`: official MLX90640 API, built by `scripts/build_native.sh`.
+- `scripts/`: install, deploy, I²C clock, icon and font generators.
+- `systemd/`: Pi service and sudoers rule.
+- `tests/`: hardware-free tests; run `scripts/check.sh`.
 
 ## Credits
 
