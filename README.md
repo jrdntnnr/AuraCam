@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="cardputer/auracam.png" alt="AuraCam logo" width="100">
+</p>
+
 # AuraCam
 
 AuraCam fuses a camera image with an MLX90640 32×24 thermal array. The
@@ -13,6 +17,8 @@ It runs on two builds:
   with the `aura` CLI and a terminal preview.
 
 Both share one capture daemon, compositor, HUD and recorder.
+
+![AuraCam on the Cardputer Zero: wide camera view with the thermal aura, probe, high and low markers, rates on the left and temperatures on the right](docs/screenshot.png)
 
 ## Hardware
 
@@ -601,6 +607,7 @@ research commands and may interrupt streaming; it is not needed to run the GUI.
 - `scripts/`: install, deploy, I²C clock, icon and font generators.
 - `systemd/`: Pi service and sudoers rule.
 - `tests/`: hardware-free tests; run `scripts/check.sh`.
+- `docs/`: README images.
 
 ## Credits
 
