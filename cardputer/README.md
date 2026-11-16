@@ -86,7 +86,8 @@ alignment (offset 64, -60, zoom 1.69, thermal rotated 180 and mirrored).
 
 ## 8ANGLE knobs
 
-Plug an M5Stack 8ANGLE into the Grove port. It stretches the I2C clock,
+Plug an M5Stack 8ANGLE into the 4-pin Grove port on the side of the device,
+not the top EXT header. It stretches the I2C clock,
 which locks the Pi's hardware bus, so it runs on its own bit-banged bus on
 the port's UART pins (GPIO14/15). Once, then reboot:
 

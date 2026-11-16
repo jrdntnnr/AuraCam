@@ -33,7 +33,6 @@ from .control import (
 from .frames import HudTelemetry, OverlayTransform
 from .rgb import RgbCamera
 from .thermal import MLX90640, DemoMLX90640, ThermalWorker
-from supercamera.validate import decode_jpeg
 
 _DEMO_CAMERA = object()
 _RECORD_END = object()
@@ -95,6 +94,20 @@ def _relative_brightness(frame: np.ndarray) -> float:
     sample = frame[::16, ::16].astype(np.float32)
     luma = sample[..., 0] * 0.114 + sample[..., 1] * 0.587 + sample[..., 2] * 0.299
     return min(1.0, max(0.0, float(np.mean(luma)) / 255.0))
+
+
+# The USB UV driver (and PyUSB) load only for the UV source, so the
+# Cardputer build runs without them.
+def _uv_camera():
+    from protocol_camera import Camera
+
+    return Camera()
+
+
+def _decode_uv(jpeg: bytes) -> np.ndarray | None:
+    from supercamera.validate import decode_jpeg
+
+    return decode_jpeg(jpeg)
 
 
 def _preview_size(request: dict[str, Any]) -> tuple[int, int] | None:
@@ -240,14 +253,12 @@ class AuraDaemon:
             self.uv_connected = True
             self.uv_error = None
             return _DEMO_CAMERA
-        from protocol_camera import Camera
-
         config = self.config_store.get()
         self._active_source = config.image_source
         camera = (
             RgbCamera(config.camera_look, config.camera_fov, config.exposure_ev)
             if self._active_source == "rgb"
-            else Camera()
+            else _uv_camera()
         )
         self._overlay = (
             camera.overlay_transform(_DEFAULT_SHAPE)
@@ -318,7 +329,7 @@ class AuraDaemon:
                     if not jpeg:
                         self.dropped_uv_frames += 1
                         continue
-                    frame = decode_jpeg(jpeg)
+                    frame = _decode_uv(jpeg)
                     if frame is None:
                         self.dropped_uv_frames += 1
                         continue

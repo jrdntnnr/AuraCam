@@ -29,7 +29,7 @@ Both share one capture daemon, compositor, HUD and recorder.
 | [M5Stack Cardputer Zero](https://docs.m5stack.com/en/CardputerZero) | Host: Raspberry Pi CM0 (BCM2837, 4× Cortex-A53 1 GHz, 512 MB), 1.9" 320×170 LCD, 46-key keyboard, 1750 mAh battery |
 | IMX219 8 MP CSI camera | Onboard RGB image source, via Picamera2 |
 | MLX90640 thermal breakout | 32×24 thermal array on the top EXT header, I²C address `0x33` |
-| [M5Stack 8ANGLE](https://docs.m5stack.com/en/unit/8Angle) (optional) | Eight knobs and a switch on the Grove port |
+| [M5Stack 8ANGLE](https://docs.m5stack.com/en/unit/8Angle) (optional) | Eight knobs and a switch, plugged into the 4-pin Grove port on the side of the device (not the top header) |
 
 The EXT header has no 3.3 V pin. Use an MLX90640 breakout with its own 3.3 V
 regulator that accepts 5 V on VIN and pulls SDA/SCL up to 3.3 V, not 5 V.
@@ -82,9 +82,13 @@ regulator that accepts 5 V on VIN and pulls SDA/SCL up to 3.3 V, not 5 V.
    5   GPIO          G22             6   5VOUT        <- MLX90640 VIN
    7   SPI0_CLK      G11             8   I2C1_SDA G2  <- MLX90640 SDA
    9   SPI0_MOSI     G10            10   I2C1_SCL G3  <- MLX90640 SCL
-  11   SPI0_MISO     G9             12   UART_RXD G15 <- 8ANGLE bus SCL
-  13   SPI0_CS1      G7             14   UART_TXD G14 <- 8ANGLE bus SDA
+  11   SPI0_MISO     G9             12   UART_RXD G15 <- same line as side Grove port
+  13   SPI0_CS1      G7             14   UART_TXD G14 <- same line as side Grove port
 ```
+
+Only the MLX90640 uses this header. The 8ANGLE plugs into the side Grove
+port, which carries the same G14/G15 lines as pins 12 and 14, so leave those
+two pins unconnected when the 8ANGLE is attached.
 
 | Pin | Signal | AuraCam use |
 |---:|---|---|
@@ -99,9 +103,9 @@ regulator that accepts 5 V on VIN and pulls SDA/SCL up to 3.3 V, not 5 V.
 | 9 | SPI0_MOSI, G10 | Unused |
 | 10 | I2C1_SCL, G3 | MLX90640 SCL |
 | 11 | SPI0_MISO, G9 | Unused |
-| 12 | UART_RXD, G15 | Shared with the Grove port; 8ANGLE SCL with the overlay below |
+| 12 | UART_RXD, G15 | Leave free: same line as the side Grove port (8ANGLE SCL) |
 | 13 | SPI0_CS1, G7 | Unused |
-| 14 | UART_TXD, G14 | Shared with the Grove port; 8ANGLE SDA with the overlay below |
+| 14 | UART_TXD, G14 | Leave free: same line as the side Grove port (8ANGLE SDA) |
 
 Pin numbering follows the M5Stack specification. Check pin 1 on the
 silkscreen before wiring, and power the device off before plugging anything
@@ -123,7 +127,10 @@ in: the header is not hot-swappable.
 
 - **Power budget**: EXT and Grove 5 V outputs share a limit under 500 mA.
 
-### Grove port (HY2.0-4P)
+### Side Grove port (HY2.0-4P), for the 8ANGLE
+
+The 4-pin port on the side of the device, separate from the top header. The
+8ANGLE plugs in here with a standard Grove cable.
 
 | Wire | Signal |
 |---|---|
@@ -148,7 +155,7 @@ sudo apt install build-essential cmake ffmpeg python3-numpy python3-opencv pytho
 # 400 kHz I2C1 lets the MLX90640 run at 16 Hz (default 100 kHz gives ~4 Hz).
 sudo scripts/set_i2c_baud.sh 400000
 
-# Optional, for the 8ANGLE: a separate I2C bus on the Grove UART pins.
+# Optional, for the 8ANGLE on the side Grove port: its own I2C bus on G14/G15.
 sudo sed -i "s/^enable_uart=1/enable_uart=0/" /boot/firmware/config.txt
 echo "dtoverlay=i2c-gpio,bus=3,i2c_gpio_sda=14,i2c_gpio_scl=15,i2c_gpio_delay_us=2" \
   | sudo tee -a /boot/firmware/config.txt
@@ -174,6 +181,21 @@ first frame.
 Do not run `scripts/install_pi.sh` on the Cardputer. It changes system I²C
 settings shared with the keyboard.
 
+### Package
+
+`scripts/pack_deb.sh` builds the CardputerZero AppStore package from a built
+tree on the device. It writes `dist/auracam_<version>_arm64.deb`, which
+installs the app under `/usr/lib/auracam` and adds the launcher entry:
+
+```sh
+sh scripts/pack_deb.sh
+sudo apt install ./dist/auracam_0.3.0_arm64.deb
+```
+
+The store listing lives in `app-builder.json` with its icon and screenshots in
+`store/`. The package does not change boot settings: the 400 kHz I²C clock
+and the 8ANGLE bus remain the manual steps above.
+
 ### Controls
 
 Keys 4 to 8 sit under the five on-screen labels. Hold Esc for 3 s to quit.
@@ -188,7 +210,7 @@ Keys 4 to 8 sit under the five on-screen labels. Hold Esc for 3 s to quit.
 
 In Calibrate, F, Z, X and C move the thermal frame up, left, down and right.
 
-8ANGLE knobs:
+8ANGLE knobs, with the unit on the side Grove port:
 
 | Knob | Sets | Range |
 |---:|---|---|
@@ -608,6 +630,7 @@ research commands and may interrupt streaming; it is not needed to run the GUI.
 - `systemd/`: Pi service and sudoers rule.
 - `tests/`: hardware-free tests; run `scripts/check.sh`.
 - `docs/`: README images.
+- `store/`, `app-builder.json`: AppStore listing; `scripts/pack_deb.sh` builds the package.
 
 ## Credits
 

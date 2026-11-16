@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
-"""Draw the AuraCam launcher icon: HUD frame brackets around a diamond.
+r"""Draw the AuraCam launcher icon: HUD frame brackets around a diamond.
 
     uv run --with pillow python scripts/gen_icon.py cardputer/auracam.png
+    uv run --with pillow python scripts/gen_icon.py store/icon.png 256 000000
+
+Optional size in pixels and an opaque background (hex RGB); the launcher
+icon is 100 px on transparent, the AppStore icon 256 px on black.
 
   +--          --+
   |              |
@@ -66,11 +70,18 @@ def diamond(draw: ImageDraw.ImageDraw) -> None:
 
 
 def main() -> None:
+    size = int(sys.argv[2]) if len(sys.argv) > 2 else SIZE
     image = Image.new("RGBA", (scaled(SIZE), scaled(SIZE)))
     draw = ImageDraw.Draw(image)
     brackets(draw)
     diamond(draw)
-    image.resize((SIZE, SIZE), Image.LANCZOS).save(sys.argv[1])
+    image = image.resize((size, size), Image.LANCZOS)
+
+    # Opaque background for listings that render icons on light pages.
+    if len(sys.argv) > 3:
+        background = Image.new("RGBA", image.size, (*bytes.fromhex(sys.argv[3]), 255))
+        image = Image.alpha_composite(background, image).convert("RGB")
+    image.save(sys.argv[1])
 
 
 if __name__ == "__main__":
