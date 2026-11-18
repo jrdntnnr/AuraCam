@@ -29,10 +29,10 @@ import numpy as np
 
 from .angle8 import KnobPoller
 from .cli import AuraClient
-from .config import ConfigStore
 from .control import CAMERA_FOVS, CAMERA_LOOKS, HUD_MODES, MODES, CameraFov, CameraLook, HudMode
 from .hud import CornerMarks, HudRenderer, Marker, palette_rgb
 from .knobs import KnobDeck, Layer
+from .launch import PALETTE, start_engine
 
 PREVIEW_SIZE = (192, 144)
 TEXT_BYTES = 1024
@@ -45,12 +45,6 @@ MESSAGE_HOLD_S = 3.0
 EXIT_KEY = "q"
 SIDE_CHARS = 10
 HEADER_CHARS = 40
-# MLX90640 at 16 Hz needs the I2C bus at 400 kHz (scripts/set_i2c_baud.sh).
-THERMAL_REFRESH_HZ = 16.0
-# Composite at the rate the 320x170 panel can show; the camera still runs at 30.
-COMPOSITE_FPS = 15
-# The Pi build's yellow-orange HUD.
-PALETTE = "amber"
 # Calibration: overlay geometry plus the grid shown while aligning.
 CALIBRATION_FIELDS = ("offset_x", "offset_y", "scale_x", "scale_y", "grid")
 ARROWS = {"U": (0, -1), "D": (0, 1), "L": (-1, 0), "R": (1, 0)}
@@ -63,21 +57,6 @@ THRESHOLD_STEPS = (0.5, 2.0)
 GRADIENTS = ("aura", "ironbow", "amber", "whitehot", "turbo", "arctic")
 GRADIENT_HOLD_S = 1.5
 KNOB_GRACE_S = 3.0
-
-# Fresh installs start wide with the Cardputer's measured thermal alignment.
-FIRST_RUN = {
-    "refresh_hz": THERMAL_REFRESH_HZ,
-    "host_fps_cap": COMPOSITE_FPS,
-    "hud_palette": PALETTE,
-    "hud_mode": HudMode.TACTICAL.value,
-    "camera_fov": CameraFov.WIDE.value,
-    "offset_x": 64,
-    "offset_y": -60,
-    "scale_x": 1.6941,
-    "scale_y": 1.6941,
-    "thermal_rotation": 180,
-    "thermal_mirror_h": True,
-}
 EXT_POWER = Path("/sys/class/leds/ext_5v_out/brightness")
 I2C_CLOCK = Path("/proc/device-tree/soc/i2c@7e804000/clock-frequency")
 
@@ -506,20 +485,11 @@ def _settled(log: BootLog) -> bool:
 
 
 def main():
-    runtime = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"))
-    socket_path = runtime / "auracam-cardputer.sock"
-    config_path = Path.home() / ".config/auracam/cardputer.json"
-    store = ConfigStore(config_path)
-    if not config_path.exists():
-        for name, value in FIRST_RUN.items():
-            store.update(name, value)
-    store.update("image_source", "rgb")
-    # Leaving mid-calibration must not keep the alignment grid on.
-    store.update("grid", False)
-    process = subprocess.Popen(
-        [sys.executable, "-m", "auracam.daemon", "--socket", str(socket_path), "--config", str(config_path)],
-        stdout=sys.stderr,
-    )
+    """Serial start; the frontend uses auracam.launch, which overlaps loads."""
+    run(*start_engine())
+
+
+def run(process: subprocess.Popen, socket_path: Path):
     client = AuraClient(str(socket_path))
     knobs = KnobPoller()
     knobs.start()

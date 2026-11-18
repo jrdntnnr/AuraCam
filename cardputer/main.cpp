@@ -1,7 +1,8 @@
 /*
  * AuraCam frontend for the Cardputer Zero's 320x170 panel.
  *
- * Forks the Python bridge (auracam/cardputer.py), reads fixed-size packets
+ * Forks the Python bridge (auracam/launch.py starts the engine, then
+ * auracam/cardputer.py), reads fixed-size packets
  * from it and draws them with LVGL; keys 4-8 go back to it on stdin.
  *
  *   +--------------------------------------------------------------+
@@ -425,7 +426,7 @@ int main() {
         close(frames[0]);
         close(frames[1]);
         close(keys);
-        execlp("python3", "python3", "-m", "auracam.cardputer", nullptr);
+        execlp("python3", "python3", "-m", "auracam.launch", nullptr);
         _exit(127);
     }
     close(commands[0]);

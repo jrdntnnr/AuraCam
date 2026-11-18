@@ -173,6 +173,9 @@ class AuraDaemon:
         self._spare_retry_at = 0.0
         self._latest_frame: np.ndarray | None = None
         self._latest_clean: np.ndarray | None = None
+        # HUD inputs for the latest frame, drawn only when something asks.
+        self._hud_pending: tuple | None = None
+        self._hud_lock = threading.Lock()
         self._frame_sequence = 0
         self._started = time.monotonic()
         self._uv_rate = RateCounter()
@@ -341,18 +344,21 @@ class AuraDaemon:
                 # Clean composite for panels that draw their own overlay; the
                 # HUD copy is what snapshots and recordings save.
                 clean = self.compositor.compose(frame, thermal, config)
-                composed = clean
+                hud = None
                 if config.hud_mode != "off":
-                    telemetry = self._hud_data(frame)
-                    composed = self.compositor.render_hud(clean.copy(), thermal, config, telemetry)
+                    hud = (thermal, config, self._hud_data(frame))
                 with self._frame_lock:
-                    self._latest_frame = composed
+                    self._latest_frame = clean
                     self._latest_clean = clean
+                    self._hud_pending = hud
                     self._frame_sequence += 1
                     self._latest_jpeg = None
                     self._jpeg_sequence = -1
-                self._write_recording(composed)
-                self._ensure_spare((composed.shape[1], composed.shape[0]))
+
+                # The HUD costs ~12 ms a frame on a CM0; draw it for recordings only.
+                if self._recording_frames():
+                    self._write_recording(self._hud_frame())
+                self._ensure_spare((clean.shape[1], clean.shape[0]))
                 self._output_rate.tick()
                 if (
                     camera is not _DEMO_CAMERA
@@ -387,6 +393,27 @@ class AuraDaemon:
             recording_frames=recording["frames"],
             i2c_errors=self.thermal.errors,
         )
+
+    def _recording_frames(self) -> bool:
+        with self._record_lock:
+            return self._record_writer is not None and self._record_accepting
+
+    def _hud_frame(self) -> np.ndarray | None:
+        """Latest composite with the HUD, drawn on first use per frame."""
+        with self._hud_lock:
+            with self._frame_lock:
+                pending, self._hud_pending = self._hud_pending, None
+                clean = self._latest_clean
+                sequence = self._frame_sequence
+                if pending is None or clean is None:
+                    return self._latest_frame
+
+            thermal, config, telemetry = pending
+            frame = self.compositor.render_hud(clean.copy(), thermal, config, telemetry)
+            with self._frame_lock:
+                if self._frame_sequence == sequence:
+                    self._latest_frame = frame
+            return frame
 
     def _write_recording(self, frame: np.ndarray) -> None:
         with self._record_lock:
@@ -592,7 +619,10 @@ class AuraDaemon:
                     and self._jpeg_layer == layer
                 ):
                     return self._latest_jpeg, sequence
-                source = self._latest_clean if layer is FrameLayer.CLEAN else self._latest_frame
+                source = self._latest_clean if layer is FrameLayer.CLEAN else None
+                frame = None if source is None else source.copy()
+            if layer is not FrameLayer.CLEAN:
+                source = self._hud_frame()
                 frame = None if source is None else source.copy()
             if frame is None:
                 return None, sequence
@@ -635,8 +665,8 @@ class AuraDaemon:
         return str(path)
 
     def _start_recording(self) -> str:
-        with self._frame_lock:
-            frame = None if self._latest_frame is None else self._latest_frame.copy()
+        source = self._hud_frame()
+        frame = None if source is None else source.copy()
         if frame is None:
             raise RuntimeError("No composited frame is available yet")
         with self._record_lock:

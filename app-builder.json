@@ -2,7 +2,7 @@
   "package_name": "auracam",
   "app_name": "AuraCam",
   "bin_name": "aura-cardputer",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Camera and MLX90640 thermal fusion for CardputerZero",
 
   "store": {

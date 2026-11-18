@@ -85,6 +85,8 @@ def capture_daemon(output_dir):
     daemon._record_writer = None
     daemon._jpeg_layer = FrameLayer.HUD
     daemon._latest_clean = None
+    daemon._hud_pending = None
+    daemon._hud_lock = threading.Lock()
     daemon._record_lock = threading.Lock()
     daemon._record_error = None
     daemon._record_frames = 0
@@ -167,6 +169,30 @@ class CaptureFileTest(unittest.TestCase):
             self.assertLess(mean(clean), 10)
             self.assertGreater(mean(hud), 245)
             self.assertGreater(mean(snapshot), 245)
+
+    def test_hud_is_drawn_on_demand_once(self):
+        # Clean previews skip the HUD; the first HUD consumer draws it.
+        with tempfile.TemporaryDirectory() as directory:
+            daemon = capture_daemon(directory)
+            daemon._latest_jpeg = None
+            daemon._jpeg_sequence = -1
+            daemon._latest_clean = np.zeros((480, 640, 3), dtype=np.uint8)
+            daemon._latest_frame = daemon._latest_clean
+            daemon._hud_pending = (None, AuraConfig(), None)
+            daemon.config_store = mock.Mock()
+            daemon.config_store.get.return_value = AuraConfig(jpeg_quality=88)
+            daemon.compositor = mock.Mock()
+            daemon.compositor.render_hud.side_effect = lambda frame, *args: np.full_like(frame, 255)
+
+            daemon._frame_jpeg((192, 144), FrameLayer.CLEAN)
+            daemon.compositor.render_hud.assert_not_called()
+
+            first = daemon._hud_frame()
+            second = daemon._hud_frame()
+            self.assertEqual(daemon.compositor.render_hud.call_count, 1)
+            self.assertIs(first, second)
+            self.assertEqual(int(first.min()), 255)
+            self.assertEqual(int(daemon._latest_clean.max()), 0)
 
     def test_overlay_config_follows_camera_crop(self):
         config = AuraConfig(scale_x=1.0, scale_y=0.9, offset_x=10, offset_y=-20)

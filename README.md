@@ -189,7 +189,7 @@ installs the app under `/usr/lib/auracam` and adds the launcher entry:
 
 ```sh
 sh scripts/pack_deb.sh
-sudo apt install ./dist/auracam_0.3.0_arm64.deb
+sudo apt install ./dist/auracam_0.3.1_arm64.deb
 ```
 
 The store listing lives in `app-builder.json` with its icon and screenshots in
@@ -233,7 +233,7 @@ unit's LEDs stay off because writing them hangs its firmware 1.
 - Captures: `~/Pictures/auracam/`
 - Settings: `~/.config/auracam/cardputer.json`
 
-A first run starts in the wide view at 16 Hz thermal and 15 fps composite,
+A first run starts in the wide view at 16 Hz thermal and a 24 fps composite cap,
 with the tactical HUD in amber and the measured alignment of the reference
 build: offset 64, −60, zoom 1.69, thermal rotated 180° and mirrored.
 

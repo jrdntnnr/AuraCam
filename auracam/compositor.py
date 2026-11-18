@@ -21,6 +21,15 @@ _CV_PALETTES = {
 _PREVIEW_SIZE = (640, 480)
 
 
+@lru_cache(maxsize=8)
+def _tone_lut(gamma: float, contrast: float, brightness: float) -> np.ndarray:
+    """uint8 map: gamma, then contrast about mid-grey, then brightness."""
+    work = np.arange(256, dtype=np.float32) / 255.0
+    work = np.power(work, 1.0 / gamma)
+    work = (work - 0.5) * contrast + 0.5
+    work *= brightness
+    return np.clip(work * 255, 0, 255).astype(np.uint8)
+
 def _palette_lut(stops: np.ndarray) -> np.ndarray:
     position = np.linspace(0.0, len(stops) - 1, 256, dtype=np.float32)
     low = np.floor(position).astype(np.int16)
@@ -72,7 +81,7 @@ class AuraCompositor:
         self._temporal_signature: tuple[str, int] | None = None
         self._previous_base: np.ndarray | None = None
         self._overlay_cache_key: tuple | None = None
-        self._overlay_cache: tuple[np.ndarray, np.ndarray] | None = None
+        self._overlay_cache: tuple[np.ndarray, np.ndarray, tuple[int, int]] | None = None
         self._hud = HudRenderer()
 
     def reset_temporal(self) -> None:
@@ -222,18 +231,16 @@ class AuraCompositor:
         ):
             return output
 
-        work = output.astype(np.float32) / 255.0
-        if config.gamma != 1.0:
-            work = np.power(np.clip(work, 0, 1), 1.0 / config.gamma)
-        work = (work - 0.5) * config.contrast + 0.5
-        work *= config.brightness
+        # Tone curve as a lookup: a float pass per pixel costs ~40 ms on a CM0.
+        tone = _tone_lut(config.gamma, config.contrast, config.brightness)
+        output = cv2.LUT(output, tone)
+
         if config.saturation != 1.0:
-            gray = cv2.cvtColor(
-                np.clip(work * 255, 0, 255).astype(np.uint8), cv2.COLOR_BGR2GRAY
-            )
+            gray = cv2.cvtColor(output, cv2.COLOR_BGR2GRAY)
             gray = gray.astype(np.float32)[..., None] / 255.0
+            work = output.astype(np.float32) / 255.0
             work = gray + (work - gray) * config.saturation
-        output = np.clip(work * 255, 0, 255).astype(np.uint8)
+            output = np.clip(work * 255, 0, 255).astype(np.uint8)
         if config.sharpness != 1.0:
             blur = cv2.GaussianBlur(output, (0, 0), 1.2)
             output = cv2.addWeighted(
@@ -349,8 +356,16 @@ class AuraCompositor:
         )
 
     def _prepare_overlay(
-        self, norm: np.ndarray, config: AuraConfig, width: int, height: int
+        self,
+        norm: np.ndarray,
+        config: AuraConfig,
+        width: int,
+        height: int,
+        window: tuple[int, int, int, int] | None = None,
     ) -> tuple[np.ndarray, np.ndarray]:
+        """Colour and alpha for the overlay, or for `window` (x0, y0, x1, y1
+        in overlay pixels) of it. Zoomed past the frame, most of the overlay
+        is off screen: at 1.69x only 1/2.9 of it is visible."""
         source_rows, source_columns = norm.shape
         interpolation = self._interpolation(config)
         overlay_w = max(1, round(width * config.scale_x))
@@ -359,6 +374,14 @@ class AuraCompositor:
         resized = self._registered_field(
             norm, overlay_w, overlay_h, interpolation, blur
         )
+        fade = None if config.grid else self._edge_fade(overlay_w, overlay_h, source_columns, source_rows)
+
+        # Per-pixel work below runs on the visible part only.
+        if window is not None:
+            x0, y0, x1, y1 = window
+            resized = resized[y0:y1, x0:x1]
+            fade = None if fade is None else fade[y0:y1, x0:x1]
+
         alpha = self._alpha(resized, config)
         color = self._colorize(resized, config.palette)
 
@@ -366,7 +389,7 @@ class AuraCompositor:
             self._draw_grid(color, source_rows, source_columns)
             alpha = np.maximum(alpha, config.max_alpha * 0.32)
         else:
-            alpha *= self._edge_fade(overlay_w, overlay_h, source_columns, source_rows)
+            alpha *= fade
 
         if config.rotation:
             matrix = cv2.getRotationMatrix2D(
@@ -400,20 +423,23 @@ class AuraCompositor:
         with self._lock:
             cached = self._overlay_cache if cache_key == self._overlay_cache_key else None
         if cached is None:
-            color, alpha = self._prepare_overlay(norm, config, width, height)
+            window = self._window(base.shape, config, geometry)
+            color, alpha = self._prepare_overlay(norm, config, width, height, window)
+            shift = (0, 0) if window is None else window[:2]
             if cache_key is not None:
                 with self._lock:
                     self._overlay_cache_key = cache_key
-                    self._overlay_cache = (color, alpha)
+                    self._overlay_cache = (color, alpha, shift)
         else:
-            color, alpha = cached
+            color, alpha, shift = cached
 
+        left, top = geometry.left + shift[0], geometry.top + shift[1]
         result = base.copy()
-        self._blend_clipped(result, color, alpha, geometry.left, geometry.top)
+        self._blend_clipped(result, color, alpha, left, top)
 
         if config.mode == "glitch":
             mask = np.zeros((height, width), dtype=np.float32)
-            self._paste_clipped(mask, alpha, geometry.left, geometry.top)
+            self._paste_clipped(mask, alpha, left, top)
             shift = np.round(mask * 22).astype(np.float32)
             grid_x, grid_y = np.meshgrid(
                 np.arange(width, dtype=np.float32), np.arange(height, dtype=np.float32)
@@ -428,6 +454,23 @@ class AuraCompositor:
             amount = np.clip(mask[..., None] * 0.55, 0.0, 1.0)
             result = (result * (1.0 - amount) + displaced * amount).astype(np.uint8)
         return result
+
+    @classmethod
+    def _window(
+        cls, shape: tuple[int, ...], config: AuraConfig, geometry: OverlayGeometry
+    ) -> tuple[int, int, int, int] | None:
+        """On-screen part of the overlay, in overlay pixels; None for full.
+
+        Grid, rotation and ghost need the whole overlay: the grid is drawn
+        over all of it, rotation pulls in off-screen pixels and the ghost
+        moves every frame while the overlay stays cached."""
+        if config.grid or config.rotation or config.mode == "ghost":
+            return None
+        bounds = cls._bounds(shape, (geometry.height, geometry.width), geometry.left, geometry.top)
+        if bounds is None:
+            return None
+        x0, y0, x1, y1, sx, sy = bounds
+        return sx, sy, sx + x1 - x0, sy + y1 - y0
 
     @staticmethod
     def _geometry(

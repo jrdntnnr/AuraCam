@@ -77,7 +77,7 @@ supports Fast-mode) and reboot:
 sudo scripts/set_i2c_baud.sh 400000 && sudo reboot
 ```
 
-A first run writes `refresh_hz` 16 and `host_fps_cap` 15 into
+A first run writes `refresh_hz` 16 and `host_fps_cap` 24 into
 `~/.config/auracam/cardputer.json`; the preview is encoded at the panel's
 192x144 so the daemon does not JPEG a 640x480 frame per preview.
 

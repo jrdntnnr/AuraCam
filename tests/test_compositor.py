@@ -205,5 +205,45 @@ class CompositorTest(unittest.TestCase):
         np.testing.assert_array_equal(result, self.base)
 
 
+    def test_tone_adjust_matches_float_math(self):
+        # Gamma, then contrast about mid-grey, then brightness; within one level.
+        config = AuraConfig(gamma=1.4, contrast=1.3, brightness=1.1)
+        frame = np.arange(256, dtype=np.uint8).reshape(16, 16, 1).repeat(3, axis=2)
+        work = np.power(frame.astype(np.float32) / 255.0, 1.0 / config.gamma)
+        work = ((work - 0.5) * config.contrast + 0.5) * config.brightness
+        expected = np.clip(work * 255, 0, 255).astype(np.uint8)
+        result = AuraCompositor._process_base(frame, config)
+        diff = np.abs(result.astype(np.int16) - expected)
+        self.assertLessEqual(int(diff.max()), 1)
+
+    def test_tone_adjust_is_fast(self):
+        # The float pass ran ~25x a frame copy: 7 fps on the Cardputer.
+        frame = np.random.default_rng(0).integers(0, 256, (480, 640, 3), np.uint8)
+        config = AuraConfig(contrast=1.3)
+
+        def cost(work):
+            work()
+            started = time.perf_counter()
+            for _ in range(50):
+                work()
+            return time.perf_counter() - started
+
+        toned = cost(lambda: AuraCompositor._process_base(frame, config))
+        copied = cost(frame.copy)
+        self.assertLess(toned, 8 * copied)
+
+    def test_zoomed_overlay_matches_full_render(self):
+        # Zoomed past the frame, only the on-screen window is built.
+        rng = np.random.default_rng(1)
+        frame = rng.integers(0, 256, (480, 640, 3), np.uint8)
+        temps = (24 + 12 * rng.random((24, 32))).astype(np.float32)
+        thermal = ThermalFrame(temps, temps, 1, 0, 30.0, 3.3, True, 1)
+        for mode in ("clean", "glitch"):
+            config = AuraConfig(mode=mode, scale_x=1.69, scale_y=1.69, offset_x=64, offset_y=-60, blur=13.0)
+            cropped = AuraCompositor().compose(frame, thermal, config)
+            full = AuraCompositor()
+            full._window = lambda *args: None
+            np.testing.assert_array_equal(cropped, full.compose(frame, thermal, config), mode)
+
 if __name__ == "__main__":
     unittest.main()
